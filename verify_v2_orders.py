@@ -171,7 +171,34 @@ def _fetch_events_markets():
     return out
 
 
+def _fetch_market_by_slug(slug):
+    try:
+        r = requests.get(f"{GAMMA}/markets", params={"slug": slug}, timeout=15)
+        r.raise_for_status()
+        batch = r.json()
+        if isinstance(batch, dict):
+            batch = [batch]
+        return batch
+    except Exception as e:
+        print(f"[gamma /markets?slug={slug}] error: {e}")
+        return []
+
+
 def find_candidate_markets():
+    explicit_market = os.environ.get("MARKET_SLUG")
+    if explicit_market:
+        print(f"[gamma] explicit MARKET_SLUG={explicit_market}")
+        ms = _fetch_market_by_slug(explicit_market)
+        recs = []
+        for m in ms:
+            rec = _to_market_record(m)
+            if rec:
+                recs.append(rec)
+                print(f"  -> {rec['question']!r}  prices={rec['tokens'][0]['approx_price']}/{rec['tokens'][1]['approx_price']}  tick={rec['tick_size']}")
+        if recs:
+            return recs
+        print("[gamma] explicit slug returned nothing — falling back to search")
+
     print("[gamma] fetching active markets...")
     out = []
     for offset in (0, 500, 1000, 1500, 2000):
