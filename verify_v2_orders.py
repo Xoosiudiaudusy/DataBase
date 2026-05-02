@@ -22,6 +22,7 @@ from py_clob_client_v2 import (
     Side,
     SignatureTypeV2,
 )
+from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
 
 load_dotenv()
 
@@ -482,6 +483,31 @@ def main():
     buy_filled = wait_filled(client, buy_id, "BUY")
     if not buy_filled:
         sys.exit("BUY: not filled in time, cancelled")
+
+    # ---- Wait for on-chain settlement before SELL ----
+    # Polymarket's order endpoint checks balance against confirmed on-chain state.
+    # After BUY MATCH, we have to wait for the trade tx to mine and the API's
+    # cached balance to reflect it.
+    ba_params = BalanceAllowanceParams(asset_type=AssetType.CONDITIONAL, token_id=tok["id"])
+    target_units = int(size) * 1_000_000  # positions are 6-decimals like USDC
+    print(f"\n[settle] waiting for on-chain balance >= {target_units} units of YES...")
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        try:
+            client.update_balance_allowance(ba_params)
+        except Exception as e:
+            print(f"  update_balance_allowance err: {e}")
+        try:
+            ba = client.get_balance_allowance(ba_params)
+            bal = int(ba.get("balance") or 0) if isinstance(ba, dict) else 0
+            print(f"  balance={bal}")
+            if bal >= target_units:
+                break
+        except Exception as e:
+            print(f"  get_balance_allowance err: {e}")
+        time.sleep(3)
+    else:
+        sys.exit("SELL: balance never showed up on-chain within 120s")
 
     # ---- SELL ----
     # Re-quote the bid in case the book moved
