@@ -284,16 +284,25 @@ def pick_token(client, candidates):
     best = None
     for m in candidates:
         for tok in m["tokens"]:
+            print(f"\n[pick] {m['slug']}/{tok['outcome']} approx_price={tok['approx_price']}")
             if tok["approx_price"] > MAX_PRICE_CAP:
+                print(f"  skip: approx_price {tok['approx_price']} > MAX_PRICE_CAP {MAX_PRICE_CAP}")
                 continue
             try:
                 ob = client.get_order_book(tok["id"])
             except Exception as e:
-                print(f"  [skip] {m['slug']}/{tok['outcome']}: get_order_book failed: {e}")
+                print(f"  skip: get_order_book failed: {e!r}")
                 continue
+            print(f"  ob type={type(ob).__name__} attrs={[a for a in dir(ob) if not a.startswith('_')][:12]}")
             asks = getattr(ob, "asks", None) or []
             bids = getattr(ob, "bids", None) or []
+            print(f"  ob: asks={len(asks)} bids={len(bids)}")
+            if asks:
+                print(f"  first asks: {[(str(a.price), str(a.size)) for a in asks[:3]]}")
+            if bids:
+                print(f"  first bids: {[(str(b.price), str(b.size)) for b in bids[:3]]}")
             if not asks or not bids:
+                print(f"  skip: empty side(s)")
                 continue
             ask_prices = sorted(Decimal(str(a.price)) for a in asks)
             bid_prices = sorted((Decimal(str(b.price)) for b in bids), reverse=True)
@@ -301,13 +310,23 @@ def pick_token(client, candidates):
             best_bid = bid_prices[0]
             ask_size_at_top = sum(Decimal(str(a.size)) for a in asks if Decimal(str(a.price)) == best_ask)
             bid_size_at_top = sum(Decimal(str(b.size)) for b in bids if Decimal(str(b.price)) == best_bid)
-            print(f"  {m['slug']}/{tok['outcome']}: bid={best_bid}@{bid_size_at_top} ask={best_ask}@{ask_size_at_top}")
+            print(f"  best_bid={best_bid}@{bid_size_at_top}  best_ask={best_ask}@{ask_size_at_top}")
             if best_ask > MAX_PRICE_CAP:
+                print(f"  skip: best_ask {best_ask} > MAX_PRICE_CAP {MAX_PRICE_CAP}")
                 continue
-            need_size = (TARGET_SPEND_USD / best_ask).quantize(Decimal("1"), rounding=ROUND_DOWN)
-            if need_size < m["min_size"] or ask_size_at_top < need_size or bid_size_at_top < need_size:
+            # Pick a size that fits our budget, but cap at what's available at top of book
+            target_size = (TARGET_SPEND_USD / best_ask).quantize(Decimal("1"), rounding=ROUND_DOWN)
+            size = min(target_size, ask_size_at_top, bid_size_at_top)
+            print(f"  target_size={target_size}  ask_top={ask_size_at_top}  bid_top={bid_size_at_top}  -> size={size}")
+            if size < m["min_size"]:
+                print(f"  skip: size {size} < market min {m['min_size']}")
                 continue
-            score = (best_ask - best_bid)  # tighter spread is better
+            cost = best_ask * size
+            if cost > MAX_BUDGET_USD:
+                print(f"  skip: cost {cost} > MAX_BUDGET_USD {MAX_BUDGET_USD}")
+                continue
+            score = (best_ask - best_bid)
+            print(f"  ACCEPT  size={size}  cost={cost}  spread={score}")
             if best is None or score < best["score"]:
                 best = {
                     "score": score,
@@ -315,6 +334,7 @@ def pick_token(client, candidates):
                     "token": tok,
                     "best_ask": best_ask,
                     "best_bid": best_bid,
+                    "size": size,
                 }
     return best
 
@@ -377,20 +397,17 @@ def main():
     tok = pick["token"]
     best_ask = pick["best_ask"]
     best_bid = pick["best_bid"]
+    size = pick["size"]
     tick_size = market["tick_size"]
 
     print()
     print(f"PICKED: {market['question']} / {tok['outcome']}")
     print(f"  token_id: {tok['id']}")
-    print(f"  best_bid={best_bid}  best_ask={best_ask}  tick={tick_size}")
+    print(f"  best_bid={best_bid}  best_ask={best_ask}  tick={tick_size}  size={size}")
 
-    size = (TARGET_SPEND_USD / best_ask).quantize(Decimal("1"), rounding=ROUND_DOWN)
     total_cost = best_ask * size
-
     if total_cost > MAX_BUDGET_USD:
         sys.exit(f"ABORT: total_cost {total_cost} > MAX_BUDGET_USD {MAX_BUDGET_USD}")
-    if size < market["min_size"]:
-        sys.exit(f"ABORT: size {size} < market min {market['min_size']}")
 
     print()
     print(f"PLAN: BUY {size} @ {best_ask} = ${total_cost}")
