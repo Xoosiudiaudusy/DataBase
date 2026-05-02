@@ -38,8 +38,9 @@ FILL_TIMEOUT_S = 60
 PRIVATE_KEY = os.environ["PRIVATE_KEY"]
 FUNDER_ADDRESS = os.environ["FUNDER_ADDRESS"]
 
-WEATHER_KEYWORDS = ("weather", "temperature", "temp ", "rain", "snow", "hottest", "coldest", "wettest")
+WEATHER_KEYWORDS = ("weather", "temperature", "temp ", "rain", "snow", "hottest", "coldest", "wettest", "degrees", "celsius", "fahrenheit", "°")
 LOCATION_KEYWORDS = ("london",)
+BIG_CITIES = ("london", "new york", "nyc", "los angeles", "chicago", "tokyo", "paris", "moscow", "berlin", "madrid", "miami", "boston")
 
 
 def make_client(creds=None):
@@ -75,10 +76,28 @@ def _parse_json_field(val):
     return []
 
 
+def _to_market_record(m):
+    token_ids = _parse_json_field(m.get("clobTokenIds"))
+    outcomes = _parse_json_field(m.get("outcomes"))
+    prices = _parse_json_field(m.get("outcomePrices"))
+    if len(token_ids) != 2 or len(prices) != 2:
+        return None
+    return {
+        "question": m.get("question"),
+        "slug": m.get("slug"),
+        "tick_size": str(m.get("orderPriceMinTickSize") or m.get("minimumTickSize") or "0.01"),
+        "min_size": Decimal(str(m.get("orderMinSize") or m.get("minimumOrderSize") or "5")),
+        "tokens": [
+            {"id": str(token_ids[0]), "outcome": outcomes[0] if outcomes else "0", "approx_price": Decimal(prices[0])},
+            {"id": str(token_ids[1]), "outcome": outcomes[1] if len(outcomes) > 1 else "1", "approx_price": Decimal(prices[1])},
+        ],
+    }
+
+
 def find_candidate_markets():
     print("[gamma] fetching active markets...")
     out = []
-    for offset in (0, 500, 1000):
+    for offset in (0, 500, 1000, 1500, 2000):
         r = requests.get(
             f"{GAMMA}/markets",
             params={
@@ -99,32 +118,45 @@ def find_candidate_markets():
         out.extend(batch)
     print(f"[gamma] got {len(out)} markets")
 
-    candidates = []
-    for m in out:
-        if not m.get("acceptingOrders"):
-            continue
+    accepting = [m for m in out if m.get("acceptingOrders")]
+    print(f"[gamma] {len(accepting)} acceptingOrders")
+
+    def passes(m, loc_kw, weather_kw):
         text = (m.get("question", "") + " " + m.get("slug", "")).lower()
-        if not any(k in text for k in LOCATION_KEYWORDS):
-            continue
-        if not any(k in text for k in WEATHER_KEYWORDS):
-            continue
-        token_ids = _parse_json_field(m.get("clobTokenIds"))
-        outcomes = _parse_json_field(m.get("outcomes"))
-        prices = _parse_json_field(m.get("outcomePrices"))
-        if len(token_ids) != 2 or len(prices) != 2:
-            continue
-        candidates.append({
-            "question": m.get("question"),
-            "slug": m.get("slug"),
-            "tick_size": str(m.get("orderPriceMinTickSize") or m.get("minimumTickSize") or "0.01"),
-            "min_size": Decimal(str(m.get("orderMinSize") or m.get("minimumOrderSize") or "5")),
-            "tokens": [
-                {"id": str(token_ids[0]), "outcome": outcomes[0] if outcomes else "0", "approx_price": Decimal(prices[0])},
-                {"id": str(token_ids[1]), "outcome": outcomes[1] if len(outcomes) > 1 else "1", "approx_price": Decimal(prices[1])},
-            ],
-        })
-    print(f"[gamma] {len(candidates)} candidate London-weather markets")
-    return candidates
+        if loc_kw and not any(k in text for k in loc_kw):
+            return False
+        if weather_kw and not any(k in text for k in weather_kw):
+            return False
+        return True
+
+    tiers = [
+        ("london+weather", LOCATION_KEYWORDS, WEATHER_KEYWORDS),
+        ("any city + weather", BIG_CITIES, WEATHER_KEYWORDS),
+        ("any weather", (), WEATHER_KEYWORDS),
+        ("london only", LOCATION_KEYWORDS, ()),
+        ("any binary market", (), ()),
+    ]
+
+    for label, loc_kw, weather_kw in tiers:
+        cands = []
+        for m in accepting:
+            if not passes(m, loc_kw, weather_kw):
+                continue
+            rec = _to_market_record(m)
+            if rec is None:
+                continue
+            # at least one side priced in our budget zone
+            if not any(t["approx_price"] <= MAX_PRICE_CAP for t in rec["tokens"]):
+                continue
+            cands.append(rec)
+        print(f"[gamma] tier '{label}': {len(cands)} candidates")
+        if cands:
+            print("[gamma] sample of candidates:")
+            for c in cands[:5]:
+                p0, p1 = c["tokens"][0]["approx_price"], c["tokens"][1]["approx_price"]
+                print(f"  - {c['question']!r}  prices={p0}/{p1}  tick={c['tick_size']}")
+            return cands
+    return []
 
 
 def pick_token(client, candidates):
