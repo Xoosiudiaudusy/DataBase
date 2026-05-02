@@ -94,6 +94,37 @@ def _to_market_record(m):
     }
 
 
+def _fetch_events_markets():
+    """Pull markets via /events (which exposes child markets for multi-outcome events)
+    filtered to ones whose event slug looks weather-related. Returns flat market dicts."""
+    out = []
+    for offset in (0, 500, 1000, 1500, 2000, 2500, 3000):
+        try:
+            r = requests.get(
+                f"{GAMMA}/events",
+                params={"active": "true", "closed": "false", "archived": "false",
+                        "limit": 500, "offset": offset},
+                timeout=30,
+            )
+            r.raise_for_status()
+        except Exception as e:
+            print(f"[gamma /events] offset={offset} error: {e}")
+            break
+        batch = r.json()
+        if not batch:
+            break
+        for ev in batch:
+            ev_text = ((ev.get("slug") or "") + " " + (ev.get("title") or "")).lower()
+            if not (any(c in ev_text for c in BIG_CITIES) or
+                    any(w in ev_text for w in WEATHER_KEYWORDS)):
+                continue
+            for m in ev.get("markets", []) or []:
+                m["_event_slug"] = ev.get("slug")
+                out.append(m)
+    print(f"[gamma /events] {len(out)} child markets from weather/city events")
+    return out
+
+
 def find_candidate_markets():
     print("[gamma] fetching active markets...")
     out = []
@@ -116,13 +147,29 @@ def find_candidate_markets():
         if not batch:
             break
         out.extend(batch)
-    print(f"[gamma] got {len(out)} markets")
+    print(f"[gamma /markets] got {len(out)} markets")
+    out.extend(_fetch_events_markets())
+    # dedup by id
+    seen = set()
+    deduped = []
+    for m in out:
+        mid = m.get("id") or m.get("conditionId") or m.get("slug")
+        if mid in seen:
+            continue
+        seen.add(mid)
+        deduped.append(m)
+    out = deduped
+    print(f"[gamma] {len(out)} unique markets total")
 
     accepting = [m for m in out if m.get("acceptingOrders")]
     print(f"[gamma] {len(accepting)} acceptingOrders")
 
     def passes(m, loc_kw, weather_kw):
-        text = (m.get("question", "") + " " + m.get("slug", "")).lower()
+        text = " ".join([
+            m.get("question", "") or "",
+            m.get("slug", "") or "",
+            m.get("_event_slug", "") or "",
+        ]).lower()
         if loc_kw and not any(k in text for k in loc_kw):
             return False
         if weather_kw and not any(k in text for k in weather_kw):
