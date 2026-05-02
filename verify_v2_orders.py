@@ -55,23 +55,33 @@ def make_client(creds=None):
 
 
 def _silence_sdk_http_logs():
-    """SDK prints raw HTTP error bodies (incl. Cloudflare HTML pages) on stdout.
-    Replace those prints with a one-line summary."""
-    try:
-        import py_clob_client_v2.http_helpers.helpers as h
-    except Exception:
-        return
-    real_print = print
+    """SDK uses logger.error() to dump raw HTTP error bodies (incl. Cloudflare HTML
+    pages). Install a filter that collapses HTML bodies to a one-line summary."""
+    import logging
 
-    def quiet_print(*args, **kwargs):
-        msg = " ".join(str(a) for a in args)
-        if "<!DOCTYPE" in msg or "<html" in msg or "Cloudflare" in msg:
-            head = msg.split("body=", 1)[0].rstrip()
-            real_print(f"{head} body=<{len(msg)} bytes html, suppressed>")
-            return
-        real_print(*args, **kwargs)
+    class _StripHtml(logging.Filter):
+        def filter(self, record):
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return True
+            if "<!DOCTYPE" in msg or "<html" in msg or "Cloudflare" in msg:
+                head = msg.split("body=", 1)[0].rstrip()
+                record.msg = f"{head} body=<{len(msg)} bytes html, suppressed>"
+                record.args = ()
+            return True
 
-    h.print = quiet_print
+    f = _StripHtml()
+    for name in (
+        "py_clob_client_v2",
+        "py_clob_client_v2.http_helpers",
+        "py_clob_client_v2.http_helpers.helpers",
+    ):
+        logging.getLogger(name).addFilter(f)
+    # ensure root sees the filter too in case loggers propagate
+    logging.getLogger().addFilter(f)
+    # Make sure the logger has at least one handler so output is visible
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 
 def get_creds():
@@ -300,12 +310,24 @@ def find_candidate_markets():
     return []
 
 
+def _ob_get(ob, key):
+    if isinstance(ob, dict):
+        return ob.get(key) or []
+    return getattr(ob, key, None) or []
+
+
+def _entry(e, key):
+    if isinstance(e, dict):
+        return e.get(key)
+    return getattr(e, key, None)
+
+
 def pick_token(client, candidates):
     """For each candidate, query the orderbook and pick the cheapest actionable side."""
     best = None
     for m in candidates:
         for tok in m["tokens"]:
-            print(f"\n[pick] {m['slug']}/{tok['outcome']} approx_price={tok['approx_price']}")
+            print(f"\n[pick] {m['slug']}/{tok['outcome']} approx_price={tok['approx_price']}  token_id={tok['id']}")
             if tok["approx_price"] > MAX_PRICE_CAP:
                 print(f"  skip: approx_price {tok['approx_price']} > MAX_PRICE_CAP {MAX_PRICE_CAP}")
                 continue
@@ -314,23 +336,32 @@ def pick_token(client, candidates):
             except Exception as e:
                 print(f"  skip: get_order_book failed: {e!r}")
                 continue
-            print(f"  ob type={type(ob).__name__} attrs={[a for a in dir(ob) if not a.startswith('_')][:12]}")
-            asks = getattr(ob, "asks", None) or []
-            bids = getattr(ob, "bids", None) or []
+            keys = list(ob.keys()) if isinstance(ob, dict) else [a for a in dir(ob) if not a.startswith('_')][:12]
+            print(f"  ob type={type(ob).__name__} keys/attrs={keys}")
+            if isinstance(ob, dict) and not ob:
+                print("  /book returned empty dict — probing /book directly via raw HTTP")
+                try:
+                    raw = requests.get("https://clob.polymarket.com/book",
+                                       params={"token_id": tok["id"]}, timeout=15)
+                    print(f"  raw /book status={raw.status_code} len={len(raw.text)} body[:300]={raw.text[:300]!r}")
+                except Exception as e:
+                    print(f"  raw /book error: {e!r}")
+            asks = _ob_get(ob, "asks")
+            bids = _ob_get(ob, "bids")
             print(f"  ob: asks={len(asks)} bids={len(bids)}")
             if asks:
-                print(f"  first asks: {[(str(a.price), str(a.size)) for a in asks[:3]]}")
+                print(f"  first asks: {[(str(_entry(a,'price')), str(_entry(a,'size'))) for a in asks[:3]]}")
             if bids:
-                print(f"  first bids: {[(str(b.price), str(b.size)) for b in bids[:3]]}")
+                print(f"  first bids: {[(str(_entry(b,'price')), str(_entry(b,'size'))) for b in bids[:3]]}")
             if not asks or not bids:
                 print(f"  skip: empty side(s)")
                 continue
-            ask_prices = sorted(Decimal(str(a.price)) for a in asks)
-            bid_prices = sorted((Decimal(str(b.price)) for b in bids), reverse=True)
+            ask_prices = sorted(Decimal(str(_entry(a, "price"))) for a in asks)
+            bid_prices = sorted((Decimal(str(_entry(b, "price"))) for b in bids), reverse=True)
             best_ask = ask_prices[0]
             best_bid = bid_prices[0]
-            ask_size_at_top = sum(Decimal(str(a.size)) for a in asks if Decimal(str(a.price)) == best_ask)
-            bid_size_at_top = sum(Decimal(str(b.size)) for b in bids if Decimal(str(b.price)) == best_bid)
+            ask_size_at_top = sum(Decimal(str(_entry(a, "size"))) for a in asks if Decimal(str(_entry(a, "price"))) == best_ask)
+            bid_size_at_top = sum(Decimal(str(_entry(b, "size"))) for b in bids if Decimal(str(_entry(b, "price"))) == best_bid)
             print(f"  best_bid={best_bid}@{bid_size_at_top}  best_ask={best_ask}@{ask_size_at_top}")
             if best_ask > MAX_PRICE_CAP:
                 print(f"  skip: best_ask {best_ask} > MAX_PRICE_CAP {MAX_PRICE_CAP}")
@@ -450,7 +481,8 @@ def main():
     # ---- SELL ----
     # Re-quote the bid in case the book moved
     ob = client.get_order_book(tok["id"])
-    bids = sorted((Decimal(str(b.price)) for b in (getattr(ob, "bids", None) or [])), reverse=True)
+    raw_bids = _ob_get(ob, "bids")
+    bids = sorted((Decimal(str(_entry(b, "price"))) for b in raw_bids), reverse=True)
     if not bids:
         sys.exit("SELL: empty bid side after buy — leaving the position to user")
     sell_price = bids[0]
