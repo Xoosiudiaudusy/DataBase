@@ -54,6 +54,26 @@ def make_client(creds=None):
     )
 
 
+def _silence_sdk_http_logs():
+    """SDK prints raw HTTP error bodies (incl. Cloudflare HTML pages) on stdout.
+    Replace those prints with a one-line summary."""
+    try:
+        import py_clob_client_v2.http_helpers.helpers as h
+    except Exception:
+        return
+    real_print = print
+
+    def quiet_print(*args, **kwargs):
+        msg = " ".join(str(a) for a in args)
+        if "<!DOCTYPE" in msg or "<html" in msg or "Cloudflare" in msg:
+            head = msg.split("body=", 1)[0].rstrip()
+            real_print(f"{head} body=<{len(msg)} bytes html, suppressed>")
+            return
+        real_print(*args, **kwargs)
+
+    h.print = quiet_print
+
+
 def get_creds():
     if all(os.environ.get(k) for k in ("CLOB_API_KEY", "CLOB_SECRET", "CLOB_PASS_PHRASE")):
         return ApiCreds(
@@ -62,6 +82,7 @@ def get_creds():
             api_passphrase=os.environ["CLOB_PASS_PHRASE"],
         )
     print("[creds] deriving L2 credentials from PRIVATE_KEY...")
+    _silence_sdk_http_logs()
     return make_client().create_or_derive_api_key()
 
 
