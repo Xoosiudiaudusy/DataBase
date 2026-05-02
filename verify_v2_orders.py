@@ -37,6 +37,10 @@ FILL_TIMEOUT_S = 60
 
 PRIVATE_KEY = os.environ["PRIVATE_KEY"]
 FUNDER_ADDRESS = os.environ["FUNDER_ADDRESS"]
+# Default to Gnosis Safe (legacy browser-wallet proxy created by Polymarket UI).
+# Override with SIGNATURE_TYPE=POLY_1271 if you have a new V2-style deposit wallet.
+SIGNATURE_TYPE_NAME = os.environ.get("SIGNATURE_TYPE", "POLY_GNOSIS_SAFE").upper()
+SIGNATURE_TYPE = getattr(SignatureTypeV2, SIGNATURE_TYPE_NAME)
 
 WEATHER_KEYWORDS = ("weather", "temperature", "temp ", "rain", "snow", "hottest", "coldest", "wettest", "degrees", "celsius", "fahrenheit", "°")
 LOCATION_KEYWORDS = ("london",)
@@ -48,7 +52,7 @@ def make_client(creds=None):
         host=HOST,
         chain_id=CHAIN_ID,
         key=PRIVATE_KEY,
-        signature_type=SignatureTypeV2.POLY_1271,
+        signature_type=SIGNATURE_TYPE,
         funder=FUNDER_ADDRESS,
         creds=creds,
     )
@@ -433,6 +437,7 @@ def wait_filled(client, order_id, label):
 
 def main():
     print(f"funder (proxy): {FUNDER_ADDRESS}")
+    print(f"signature type: {SIGNATURE_TYPE_NAME} ({SIGNATURE_TYPE.value})")
     creds = get_creds()
     client = make_client(creds)
     print(f"L2 creds: api_key={creds.api_key[:8]}...")
