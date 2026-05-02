@@ -94,16 +94,55 @@ def _to_market_record(m):
     }
 
 
+def _flatten_event(ev):
+    out = []
+    for m in ev.get("markets", []) or []:
+        m["_event_slug"] = ev.get("slug")
+        m["_event_title"] = ev.get("title")
+        out.append(m)
+    return out
+
+
+def _fetch_event_by_slug(slug):
+    try:
+        r = requests.get(f"{GAMMA}/events", params={"slug": slug}, timeout=15)
+        r.raise_for_status()
+        batch = r.json()
+        if isinstance(batch, dict):
+            batch = [batch]
+        out = []
+        for ev in batch:
+            out.extend(_flatten_event(ev))
+        if out:
+            print(f"[gamma /events?slug={slug}] {len(out)} child markets")
+        return out
+    except Exception as e:
+        print(f"[gamma /events?slug={slug}] error: {e}")
+        return []
+
+
 def _fetch_events_markets():
     """Pull markets via /events (which exposes child markets for multi-outcome events)
     filtered to ones whose event slug looks weather-related. Returns flat market dicts."""
+    # Direct lookup of any explicitly requested event
     out = []
-    for offset in (0, 500, 1000, 1500, 2000, 2500, 3000):
+    explicit = os.environ.get("EVENT_SLUG")
+    if explicit:
+        out.extend(_fetch_event_by_slug(explicit))
+    # Try a couple of common London weather event slug patterns (today/tomorrow)
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    for d in (now, now + timedelta(days=1), now - timedelta(days=1)):
+        slug = f"highest-temperature-in-london-on-{d.strftime('%B').lower()}-{d.day}-{d.year}"
+        out.extend(_fetch_event_by_slug(slug))
+
+    seen_event_keys = set()
+    london_events_seen = []
+    for offset in (0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000):
         try:
             r = requests.get(
                 f"{GAMMA}/events",
-                params={"active": "true", "closed": "false", "archived": "false",
-                        "limit": 500, "offset": offset},
+                params={"closed": "false", "archived": "false", "limit": 500, "offset": offset},
                 timeout=30,
             )
             r.raise_for_status()
@@ -114,14 +153,21 @@ def _fetch_events_markets():
         if not batch:
             break
         for ev in batch:
-            ev_text = ((ev.get("slug") or "") + " " + (ev.get("title") or "")).lower()
+            ev_slug = ev.get("slug") or ""
+            ev_text = (ev_slug + " " + (ev.get("title") or "")).lower()
+            if "london" in ev_text:
+                london_events_seen.append(ev_slug)
             if not (any(c in ev_text for c in BIG_CITIES) or
                     any(w in ev_text for w in WEATHER_KEYWORDS)):
                 continue
-            for m in ev.get("markets", []) or []:
-                m["_event_slug"] = ev.get("slug")
-                out.append(m)
+            key = ev.get("id") or ev_slug
+            if key in seen_event_keys:
+                continue
+            seen_event_keys.add(key)
+            out.extend(_flatten_event(ev))
     print(f"[gamma /events] {len(out)} child markets from weather/city events")
+    if london_events_seen:
+        print(f"[gamma /events] london-mentioning event slugs seen: {london_events_seen[:10]}")
     return out
 
 
