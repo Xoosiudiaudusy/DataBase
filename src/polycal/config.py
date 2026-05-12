@@ -46,9 +46,15 @@ CACHE_DIR = REPO_ROOT / "cache"
 FORECAST_CACHE = CACHE_DIR / "forecasts"
 ACTUALS_CACHE = CACHE_DIR / "actuals"
 DERIVED_CACHE = CACHE_DIR / "derived"
+POLYMARKET_CACHE = CACHE_DIR / "polymarket"
 
-for _d in (FORECAST_CACHE, ACTUALS_CACHE, DERIVED_CACHE):
+for _d in (FORECAST_CACHE, ACTUALS_CACHE, DERIVED_CACHE, POLYMARKET_CACHE):
     _d.mkdir(parents=True, exist_ok=True)
+
+
+# --- Polymarket endpoints ---
+GAMMA_API = "https://gamma-api.polymarket.com"
+CLOB_API = "https://clob.polymarket.com"
 
 
 def kelvin_to_f(k: float) -> float:

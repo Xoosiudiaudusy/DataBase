@@ -56,16 +56,45 @@ def run(
 
 def cli() -> None:
     p = argparse.ArgumentParser(description="Polymarket NYC temperature calibration backtest")
-    p.add_argument("--start", type=_parse_date, required=True, help="Start date YYYY-MM-DD")
-    p.add_argument("--end", type=_parse_date, required=True, help="End date YYYY-MM-DD (inclusive)")
+    sub = p.add_subparsers(dest="cmd")
+
+    # Default subcommand: backfill (forecast vs actual calibration).
+    bp = sub.add_parser("backfill", help="Build forecast/actuals dataset + calibration plot")
+    bp.add_argument("--start", type=_parse_date, required=True)
+    bp.add_argument("--end", type=_parse_date, required=True)
+    bp.add_argument("--lead-times", type=_parse_lead_times, default=LEAD_TIMES_HOURS)
+    bp.add_argument("--model", choices=["nbm", "hrrr"], default=MODEL_DEFAULT)
+    bp.add_argument("--actuals-source", choices=["mesonet", "isd"], default=ACTUALS_SOURCE_DEFAULT)
+    bp.add_argument("--out-dir", type=Path, default=DERIVED_CACHE)
+
+    # Polymarket fetcher: discover NYC temp events, save metadata + hourly prices.
+    fp = sub.add_parser("fetch-polymarket",
+                        help="Discover NYC temperature markets and fetch hourly price history")
+    fp.add_argument("--start", type=_parse_date, required=True)
+    fp.add_argument("--end", type=_parse_date, required=True)
+    fp.add_argument("--sleep", type=float, default=0.1,
+                    help="Pause between CLOB requests, seconds")
+
+    # Back-compat: bare `polycal --start ... --end ...` runs the backfill.
+    p.add_argument("--start", type=_parse_date, help=argparse.SUPPRESS)
+    p.add_argument("--end", type=_parse_date, help=argparse.SUPPRESS)
     p.add_argument("--lead-times", type=_parse_lead_times,
-                   default=LEAD_TIMES_HOURS, help="Comma-separated, hours (e.g. 1,3,6,12,24)")
-    p.add_argument("--model", choices=["nbm", "hrrr"], default=MODEL_DEFAULT)
+                   default=LEAD_TIMES_HOURS, help=argparse.SUPPRESS)
+    p.add_argument("--model", choices=["nbm", "hrrr"], default=MODEL_DEFAULT, help=argparse.SUPPRESS)
     p.add_argument("--actuals-source", choices=["mesonet", "isd"],
-                   default=ACTUALS_SOURCE_DEFAULT,
-                   help="mesonet=Iowa State Mesonet (default); isd=NOAA ISD on S3 fallback")
-    p.add_argument("--out-dir", type=Path, default=DERIVED_CACHE)
+                   default=ACTUALS_SOURCE_DEFAULT, help=argparse.SUPPRESS)
+    p.add_argument("--out-dir", type=Path, default=DERIVED_CACHE, help=argparse.SUPPRESS)
+
     args = p.parse_args()
+
+    if args.cmd == "fetch-polymarket":
+        from .fetch_polymarket import run as run_poly
+        run_poly(args.start, args.end, sleep_s=args.sleep)
+        return
+
+    # Default / backfill
+    if args.start is None or args.end is None:
+        p.error("--start and --end are required for backfill")
     run(args.start, args.end, args.lead_times, args.model, args.out_dir,
         actuals_source=args.actuals_source)
 
