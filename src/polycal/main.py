@@ -75,6 +75,20 @@ def cli() -> None:
     fp.add_argument("--sleep", type=float, default=0.1,
                     help="Pause between CLOB requests, seconds")
 
+    # Market calibration: snapshot Polymarket prices at lead times, join actuals,
+    # bin by price → empirical winrate vs market YES price.
+    mp = sub.add_parser("market-calibration",
+                        help="Bucket cached Polymarket prices by lead time and "
+                             "compute empirical winrate vs market YES price")
+    mp.add_argument("--start", type=_parse_date, required=True)
+    mp.add_argument("--end", type=_parse_date, required=True)
+    mp.add_argument("--lead-times", type=_parse_lead_times, default=LEAD_TIMES_HOURS)
+    mp.add_argument("--actuals-source", choices=["mesonet", "isd"],
+                    default=ACTUALS_SOURCE_DEFAULT)
+    mp.add_argument("--tolerance-hours", type=float, default=2.0,
+                    help="Max gap between target lead-time and nearest cached price")
+    mp.add_argument("--out-dir", type=Path, default=DERIVED_CACHE)
+
     # Back-compat: bare `polycal --start ... --end ...` runs the backfill.
     p.add_argument("--start", type=_parse_date, help=argparse.SUPPRESS)
     p.add_argument("--end", type=_parse_date, help=argparse.SUPPRESS)
@@ -90,6 +104,31 @@ def cli() -> None:
     if args.cmd == "fetch-polymarket":
         from .fetch_polymarket import run as run_poly
         run_poly(args.start, args.end, sleep_s=args.sleep)
+        return
+
+    if args.cmd == "market-calibration":
+        from .market_calibration import run as run_market
+        from .plot_market import plot_market_calibration
+        joined, cal = run_market(
+            args.start, args.end,
+            lead_times=args.lead_times,
+            actuals_source=args.actuals_source,
+            tolerance_hours=args.tolerance_hours,
+        )
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        tag = f"polymarket_{args.start.isoformat()}_{args.end.isoformat()}"
+        joined_path = args.out_dir / f"market_dataset_{tag}.parquet"
+        cal_path = args.out_dir / f"market_calibration_{tag}.parquet"
+        png_path = args.out_dir / f"market_calibration_{tag}.png"
+        joined.to_parquet(joined_path, index=False)
+        cal.to_parquet(cal_path, index=False)
+        plot_market_calibration(
+            cal, joined, png_path,
+            title=f"Polymarket NYC temp — empirical vs price — {args.start}…{args.end}",
+        )
+        print(f"Snapshots: {len(joined)} rows → {joined_path}")
+        print(f"Calibration: {len(cal)} buckets → {cal_path}")
+        print(f"Plot: {png_path}")
         return
 
     # Default / backfill
