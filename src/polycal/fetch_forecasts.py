@@ -9,9 +9,13 @@ Lead-time semantics (per spec):
 where local() converts a naive timestamp in America/New_York to UTC. The
 floor handles DST and the fact that NBM/HRRR run on the hour.
 
-Caveat: for small lead times (1, 3, 6 h) the issue time falls inside or
-after the daily window, so only the tail of the window is covered. This is
-documented as a feature: it shows the nowcast collapsing the forecast spread.
+For short lead times where ``issue_utc`` lies inside or after the daily
+window, we splice: ISD/Mesonet observations cover ``valid_time < issue_utc``
+and the NBM forecast covers ``valid_time >= issue_utc``. That mirrors what a
+Polymarket trader sees at e.g. 9 PM EDT — peak heating already observed, only
+a short forecast tail remains. With ``allow_obs_splice=False`` the function
+returns ``None`` for any (date, lead) whose issue time has no forecast steps
+inside the window — that matches the strict spec interpretation.
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from .config import (
+    ACTUALS_SOURCE_DEFAULT,
     DAILY_WINDOW_UTC_HOURS,
     FORECAST_CACHE,
     LOCAL_TZ,
@@ -126,13 +131,37 @@ def _per_day_cache(model: str, local_date: dt.date, issue_utc: pd.Timestamp) -> 
     return sub / f"forecast_high_{local_date:%Y-%m-%d}_{issue_utc:%Y%m%dT%HZ}.parquet"
 
 
+def _observed_max_before(
+    local_date: dt.date, issue_utc: pd.Timestamp,
+    actuals_source: str,
+) -> tuple[float | None, int]:
+    """Max ISD/Mesonet temperature for valid times in [12Z(D), issue_utc)."""
+    from .fetch_actuals import fetch_actuals_year
+
+    raw = fetch_actuals_year(local_date.year, source=actuals_source)
+    window_start = pd.Timestamp(local_date).tz_localize("UTC") + pd.Timedelta(hours=DAILY_WINDOW_UTC_HOURS[0])
+    issue_utc_aware = issue_utc.tz_localize("UTC")
+    mask = (raw["valid_utc"] >= window_start) & (raw["valid_utc"] < issue_utc_aware)
+    sub = raw.loc[mask, "tmpf"]
+    if sub.empty:
+        return None, 0
+    return float(sub.max()), int(len(sub))
+
+
 def forecast_high_for_day(
     local_date: dt.date, lead_hours: int, model: str = "nbm",
+    allow_obs_splice: bool = True,
+    actuals_source: str = ACTUALS_SOURCE_DEFAULT,
 ) -> dict | None:
     """Compute (and cache) the forecast daily high for one (date, lead).
 
-    Returns ``None`` when the issue time is past the end of the daily window
-    (no fxx covers the window). Cached at the per-day parquet layer.
+    For (date, lead) where the issue time still leaves forecast steps inside
+    the daily window, this is a pure NBM/HRRR forecast. For short lead times
+    where the issue time has passed (part of) the window, the daily high is
+    spliced as max( observed temps for valid<issue_utc, forecast for valid>=issue_utc ) —
+    matching what a Polymarket trader knows at that moment. Set
+    ``allow_obs_splice=False`` for the strict-spec interpretation (returns
+    ``None`` in that case).
     """
     issue_utc = issue_time_for(local_date, lead_hours)
     cache_path = _per_day_cache(model, local_date, issue_utc)
@@ -141,21 +170,36 @@ def forecast_high_for_day(
         steps = pd.read_parquet(cache_path)
     else:
         fxx_iter = fxx_list_for(issue_utc, local_date)
-        if not fxx_iter:
-            return None
-        steps = fetch_forecast_temps(issue_utc, fxx_iter, model=model)
-        steps.insert(0, "local_date", local_date)
-        steps.insert(1, "model", model)
-        steps.insert(2, "run_hour_utc", issue_utc)
-        steps.to_parquet(cache_path, index=False)
+        if fxx_iter:
+            steps = fetch_forecast_temps(issue_utc, fxx_iter, model=model)
+            steps.insert(0, "local_date", local_date)
+            steps.insert(1, "model", model)
+            steps.insert(2, "run_hour_utc", issue_utc)
+            steps.to_parquet(cache_path, index=False)
+        else:
+            steps = pd.DataFrame(columns=["valid_time_utc", "fxx", "t2m_f"])
 
-    if steps.empty:
+    forecast_max = float(steps["t2m_f"].max()) if not steps.empty else None
+    n_forecast = int(len(steps))
+
+    observed_max = None
+    n_observed = 0
+    if allow_obs_splice:
+        observed_max, n_observed = _observed_max_before(
+            local_date, issue_utc, actuals_source=actuals_source,
+        )
+
+    candidates = [v for v in (forecast_max, observed_max) if v is not None]
+    if not candidates:
         return None
 
     return {
         "local_date": local_date,
         "lead_time": lead_hours,
         "run_hour_utc": issue_utc,
-        "forecast_high_f": float(steps["t2m_f"].max()),
-        "n_steps": int(len(steps)),
+        "forecast_high_f": max(candidates),
+        "n_steps": n_forecast,
+        "n_obs_used": n_observed,
+        "spliced": observed_max is not None and n_forecast > 0,
+        "obs_only": observed_max is not None and n_forecast == 0,
     }

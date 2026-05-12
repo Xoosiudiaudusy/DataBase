@@ -46,7 +46,7 @@ def build_rows(
             continue
         actual = actuals[d]
         for T in lead_times:
-            row = forecast_high_for_day(d, T, model=model)
+            row = forecast_high_for_day(d, T, model=model, actuals_source=actuals_source)
             if row is None:
                 continue
             for off in THRESHOLD_OFFSETS_F:
