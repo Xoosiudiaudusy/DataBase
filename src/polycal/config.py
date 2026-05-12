@@ -12,9 +12,14 @@ from pathlib import Path
 # --- Station / market ---
 STATION_ID = "LGA"            # Iowa Mesonet id (no K-prefix)
 STATION_ICAO = "KLGA"         # ICAO; some endpoints want this form
+ISD_STATION = "72503014732"   # NOAA ISD usaf+wban id for KLGA (S3 fallback)
 STATION_LAT = 40.7773
 STATION_LON = -73.8726
 LOCAL_TZ = "America/New_York"
+
+# Default actuals source. "mesonet" = Iowa State (rich, but some networks block it).
+# "isd" = NOAA Integrated Surface Database on S3 (always reachable from AWS).
+ACTUALS_SOURCE_DEFAULT = "mesonet"
 
 # --- Forecast model defaults ---
 MODEL_DEFAULT = "nbm"         # one of {"nbm", "hrrr"}

@@ -13,7 +13,7 @@ from typing import Iterable
 import pandas as pd
 from tqdm import tqdm
 
-from .config import THRESHOLD_OFFSETS_F
+from .config import ACTUALS_SOURCE_DEFAULT, THRESHOLD_OFFSETS_F
 from .fetch_actuals import daily_highs
 from .fetch_forecasts import forecast_high_for_day
 
@@ -29,10 +29,14 @@ def _iter_dates(start: dt.date, end: dt.date) -> Iterable[dt.date]:
 def build_rows(
     start: dt.date, end: dt.date,
     lead_times: list[int], model: str = "nbm",
+    actuals_source: str = ACTUALS_SOURCE_DEFAULT,
     show_progress: bool = True,
 ) -> pd.DataFrame:
     """Build the day × lead × threshold dataset for the requested window."""
-    actuals = daily_highs(start, end).set_index("local_date")["actual_high_f"].to_dict()
+    actuals = (
+        daily_highs(start, end, source=actuals_source)
+        .set_index("local_date")["actual_high_f"].to_dict()
+    )
 
     pairs: list[dict] = []
     dates = list(_iter_dates(start, end))

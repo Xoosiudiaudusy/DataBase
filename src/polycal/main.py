@@ -7,7 +7,12 @@ from pathlib import Path
 
 from .build_dataset import build_rows
 from .calibration import bin_and_aggregate
-from .config import DERIVED_CACHE, LEAD_TIMES_HOURS, MODEL_DEFAULT
+from .config import (
+    ACTUALS_SOURCE_DEFAULT,
+    DERIVED_CACHE,
+    LEAD_TIMES_HOURS,
+    MODEL_DEFAULT,
+)
 from .plot import plot_calibration
 
 
@@ -23,10 +28,12 @@ def run(
     start: dt.date, end: dt.date,
     lead_times: list[int], model: str,
     out_dir: Path,
+    actuals_source: str = ACTUALS_SOURCE_DEFAULT,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Building dataset: {start} → {end}, model={model}, lead_times={lead_times}")
-    ds = build_rows(start, end, lead_times, model=model)
+    print(f"Building dataset: {start} → {end}, model={model}, "
+          f"actuals={actuals_source}, lead_times={lead_times}")
+    ds = build_rows(start, end, lead_times, model=model, actuals_source=actuals_source)
     if ds.empty:
         print("No rows built (no forecast/actuals overlap). Exiting.")
         return
@@ -54,9 +61,13 @@ def cli() -> None:
     p.add_argument("--lead-times", type=_parse_lead_times,
                    default=LEAD_TIMES_HOURS, help="Comma-separated, hours (e.g. 1,3,6,12,24)")
     p.add_argument("--model", choices=["nbm", "hrrr"], default=MODEL_DEFAULT)
+    p.add_argument("--actuals-source", choices=["mesonet", "isd"],
+                   default=ACTUALS_SOURCE_DEFAULT,
+                   help="mesonet=Iowa State Mesonet (default); isd=NOAA ISD on S3 fallback")
     p.add_argument("--out-dir", type=Path, default=DERIVED_CACHE)
     args = p.parse_args()
-    run(args.start, args.end, args.lead_times, args.model, args.out_dir)
+    run(args.start, args.end, args.lead_times, args.model, args.out_dir,
+        actuals_source=args.actuals_source)
 
 
 if __name__ == "__main__":
