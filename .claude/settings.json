@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "sandbox": {
+    "network": {
+      "allowedDomains": [
+        "gamma-api.polymarket.com",
+        "clob.polymarket.com",
+        "data-api.polymarket.com",
+        "docs.polymarket.com"
+      ]
+    }
+  }
+}
