@@ -57,6 +57,32 @@ literature: longshots slightly overpriced, favorites at or above fair. Both
 effects are small at peak-heating lead times and noisy at longer leads. Worth
 a longer window before concluding (only ~120 days here).
 
+**Trading-strategy implication.** Buying NO on YES-favorite markets to "catch
+reversals" — the obvious play if the tail-overpricing thesis held — is a money
+loser in this sample:
+
+  * T=1h, buy NO when YES ≥ 0.70 (n=93 trades): realized NO winrate 7.5%
+    vs avg NO cost 10.1% → **ROI −26%**.
+  * T=3h, same rule (n=41): ROI −26%.
+  * Only the narrow band p_market ∈ [0.72, 0.78] shows a hint of +EV NO,
+    but Wilson CI is wide (n ≤ 8 per bucket).
+
+## NBM forecast accuracy at peak-heating lead times
+
+A 31-day NBM backfill on July 2025 (`results/dataset_nbm_jul2025.parquet`)
+shows why high-confidence Polymarket favorites resolve at 100%:
+
+  * **T = 1h**: MAE = 0.27 °F, median |err| = 0 °F, 84% of days within ±0.5 °F.
+    The forecast at 16:00 EDT (obs-spliced through 16Z) essentially knows
+    the answer. Only 1/31 days had |err| > 1 °F.
+  * **T = 3h**: MAE = 1.15 °F, **bias = −0.81 °F** (consistent under-
+    forecast), 45% of days |err| > 1 °F, 19% > 2 °F. Worst miss 4.2 °F low.
+
+The −0.81 °F bias at T=3h is the more actionable finding. On "≤ X°F or below"
+markets where X is just above NBM's T=3h forecast, the actual high comes in
+above X more often than the market prices imply. Pricing this out vs the
+cached Polymarket data is the obvious next step.
+
 ## How to run
 
 ```bash
