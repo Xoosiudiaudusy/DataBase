@@ -93,16 +93,32 @@ def snapshot_prices(
 def join_with_actuals(
     snapshots: pd.DataFrame,
     actuals: pd.DataFrame | dict[dt.date, float],
+    markets: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    """Add ``actual_high_f`` and ``yes_won`` columns. Drops rows w/o an actual."""
+    """Attach ``actual_high_f`` (sanity) and ``yes_won`` (calibration target).
+
+    The 2025 ``nyc-daily-weather`` series mixes three market shapes — "X°F or
+    below", "X°F or above", "between X-Y°F" — so the legacy rule
+    ``yes_won = actual_high >= threshold`` is wrong for two of them. When
+    ``markets`` is supplied we read the resolved outcome directly from
+    ``outcomePrices`` (1 = YES won) which is correct for all shapes. The
+    actuals join is kept for diagnostics.
+    """
     if isinstance(actuals, pd.DataFrame):
         actuals_map = dict(zip(actuals["local_date"], actuals["actual_high_f"]))
     else:
         actuals_map = dict(actuals)
     df = snapshots.copy()
     df["actual_high_f"] = df["resolve_date"].map(actuals_map)
-    df = df.dropna(subset=["actual_high_f"]).copy()
-    df["yes_won"] = (df["actual_high_f"] >= df["threshold_f"]).astype(int)
+
+    if markets is not None and "yes_won_final" in markets.columns:
+        won = markets.set_index("market_id")["yes_won_final"]
+        df["yes_won"] = df["market_id"].map(won)
+        df = df.dropna(subset=["yes_won"]).copy()
+        df["yes_won"] = df["yes_won"].astype(int)
+    else:
+        df = df.dropna(subset=["actual_high_f"]).copy()
+        df["yes_won"] = (df["actual_high_f"] >= df["threshold_f"]).astype(int)
     return df.reset_index(drop=True)
 
 
@@ -147,6 +163,7 @@ def run(
     Returns ``(joined_rows, calibration_table)``. Both are ready to persist.
     """
     prices_path = polymarket_dir / "prices.parquet"
+    markets_path = polymarket_dir / "markets.parquet"
     if not prices_path.exists():
         raise FileNotFoundError(
             f"Polymarket cache missing at {prices_path}. "
@@ -164,10 +181,15 @@ def run(
     if snaps.empty:
         raise RuntimeError("No price snapshots within tolerance — widen --tolerance?")
 
-    actuals = daily_highs(start, end, source=actuals_source)
-    joined = join_with_actuals(snaps, actuals)
+    markets = pd.read_parquet(markets_path) if markets_path.exists() else None
+    try:
+        actuals = daily_highs(start, end, source=actuals_source)
+    except Exception as e:
+        print(f"  actuals unavailable ({e}); proceeding with market-outcome resolution only.")
+        actuals = {}
+    joined = join_with_actuals(snaps, actuals, markets=markets)
     if joined.empty:
-        raise RuntimeError("Snapshots present but no overlapping actuals.")
+        raise RuntimeError("Snapshots present but no resolvable markets.")
 
     cal = bin_by_price(joined)
     return joined, cal

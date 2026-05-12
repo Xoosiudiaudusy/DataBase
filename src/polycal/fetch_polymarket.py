@@ -97,12 +97,15 @@ def parse_threshold(question: str) -> int | None:
 
 
 def discover_events(start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
-    """Return DataFrame of NYC daily-high temperature events resolving in [start, end]."""
-    # Use end_date filters (event resolves on end_date)
+    """Return DataFrame of NYC daily-high temperature events resolving in [start, end].
+
+    Filters by the canonical Polymarket series ``nyc-daily-weather`` (created
+    2025-01-21). Events before that date or in other series won't appear.
+    """
     params = {
+        "series_slug": "nyc-daily-weather",
         "closed": "true",
         "archived": "false",
-        "tag_slug": "weather",
         "end_date_min": f"{start_date.isoformat()}T00:00:00Z",
         "end_date_max": f"{(end_date + dt.timedelta(days=1)).isoformat()}T00:00:00Z",
         "order": "endDate",
@@ -128,26 +131,43 @@ def discover_events(start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
 
 # ---------- markets & price history ----------
 
-def extract_markets(events_df: pd.DataFrame) -> pd.DataFrame:
-    """Flatten events into one row per binary market with threshold parsed."""
+def _parse_json_field(v):
     import json
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except Exception:
+            return None
+    return v
+
+
+def _resolve_yes_won(outcomes, outcome_prices) -> int | None:
+    """Return 1 if YES resolved win, 0 if NO won, None if unresolved/unknown.
+
+    Polymarket stores final outcome as parallel lists ``outcomes`` (labels) and
+    ``outcomePrices`` (post-resolution prices, "1" for the winning side).
+    """
+    if not outcomes or not outcome_prices or len(outcomes) != len(outcome_prices):
+        return None
+    for o, p in zip(outcomes, outcome_prices):
+        if str(o).strip().lower() in ("yes", "true", "1"):
+            try:
+                return int(round(float(p)))
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def extract_markets(events_df: pd.DataFrame) -> pd.DataFrame:
+    """Flatten events into one row per binary market with threshold + final outcome."""
     out = []
     for _, ev in events_df.iterrows():
         for m in (ev["raw"].get("markets") or []):
             q = m.get("question") or ""
             thr = parse_threshold(q)
-            token_ids = m.get("clobTokenIds")
-            if isinstance(token_ids, str):
-                try:
-                    token_ids = json.loads(token_ids)
-                except Exception:
-                    token_ids = None
-            outcomes = m.get("outcomes")
-            if isinstance(outcomes, str):
-                try:
-                    outcomes = json.loads(outcomes)
-                except Exception:
-                    outcomes = None
+            token_ids = _parse_json_field(m.get("clobTokenIds"))
+            outcomes = _parse_json_field(m.get("outcomes"))
+            outcome_prices = _parse_json_field(m.get("outcomePrices"))
             yes_token = None
             if token_ids and outcomes and len(token_ids) == len(outcomes):
                 for o, tid in zip(outcomes, token_ids):
@@ -165,11 +185,11 @@ def extract_markets(events_df: pd.DataFrame) -> pd.DataFrame:
                 "question": q,
                 "threshold_f": thr,
                 "yes_token_id": str(yes_token) if yes_token else None,
+                "yes_won_final": _resolve_yes_won(outcomes, outcome_prices),
                 "resolved_outcome": m.get("umaResolutionStatus") or m.get("resolvedBy") or None,
-                "outcome_prices_final": m.get("outcomePrices"),
             })
     df = pd.DataFrame(out)
-    return df.dropna(subset=["threshold_f", "yes_token_id"]).reset_index(drop=True)
+    return df.dropna(subset=["threshold_f", "yes_token_id", "yes_won_final"]).reset_index(drop=True)
 
 
 def fetch_price_history(
@@ -217,8 +237,11 @@ def run(start_date: dt.date, end_date: dt.date, sleep_s: float = 0.1) -> None:
         resolve = row["resolve_date"]
         if resolve is None:
             continue
+        # CLOB caps prices-history span at ~15 days (360h) at fidelity=60.
+        # -14d/+1d = 15d covers all lead times we care about (≤72h) plus the
+        # full resolve day in UTC (peak heating 17:00 EDT = 21:00 UTC).
         start_ts = int(pd.Timestamp(resolve - dt.timedelta(days=14)).timestamp())
-        end_ts = int((pd.Timestamp(resolve) + pd.Timedelta(days=2)).timestamp())
+        end_ts = int((pd.Timestamp(resolve) + pd.Timedelta(days=1)).timestamp())
         try:
             ph = fetch_price_history(row["yes_token_id"], start_ts, end_ts, fidelity_min=60)
         except requests.HTTPError as e:
