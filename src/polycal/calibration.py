@@ -52,20 +52,44 @@ def bin_and_aggregate(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+def per_lead_error_stats(df: pd.DataFrame) -> pd.DataFrame:
+    """Per-lead error stats. Forecast error = forecast - actual; one row per (date, lead).
+
+    Returns DataFrame indexed by lead_time with columns: n, mae, bias, std.
+    The theoretical-normal calibration curve uses ``bias`` and ``std`` directly,
+    not MAE — because the NBM/HRRR error distribution has a non-zero mean
+    (NBM in NYC is consistently cold-biased), and an unbiased Gaussian
+    overstates uncertainty.
+    """
+    per_day = df.drop_duplicates(["date", "lead_time"]).copy()
+    per_day["err"] = per_day["forecast_high"] - per_day["actual_high"]
+    per_day["ae"] = per_day["err"].abs()
+    return per_day.groupby("lead_time").agg(
+        n=("date", "nunique"),
+        mae=("ae", "mean"),
+        bias=("err", "mean"),
+        std=("err", "std"),
+    )
+
+
 def per_lead_mae(df: pd.DataFrame) -> dict[int, float]:
-    """MAE of forecast vs actual high per lead time. One row per (date, lead)."""
-    per_day = df.drop_duplicates(["date", "lead_time"])
-    per_day = per_day.assign(abs_err=(per_day["forecast_high"] - per_day["actual_high"]).abs())
-    return per_day.groupby("lead_time")["abs_err"].mean().to_dict()
+    """Backward-compatible MAE-only helper (used by older plot code)."""
+    return per_lead_error_stats(df)["mae"].to_dict()
 
 
 def theoretical_curve(
-    mae_f: float, spreads: np.ndarray | None = None,
+    sigma_f: float, bias_f: float = 0.0,
+    spreads: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """P(YES | spread) under zero-bias normal error with given MAE."""
+    """P(YES | spread) under bias-adjusted normal forecast error.
+
+    ``sigma_f`` and ``bias_f`` are the std and mean of (forecast - actual)
+    over the relevant lead time. Then
+        P(actual >= threshold | spread) = Phi( (spread - bias) / sigma ).
+    With bias=0 this reduces to the standard zero-bias normal calibration.
+    """
     if spreads is None:
         spreads = np.linspace(-5.25, 5.25, 200)
-    sigma = mae_f * math.sqrt(math.pi / 2.0)
-    if sigma <= 0:
+    if sigma_f <= 0:
         return spreads, np.full_like(spreads, 0.5)
-    return spreads, norm.cdf(spreads / sigma)
+    return spreads, norm.cdf((spreads - bias_f) / sigma_f)
