@@ -57,15 +57,30 @@ literature: longshots slightly overpriced, favorites at or above fair. Both
 effects are small at peak-heating lead times and noisy at longer leads. Worth
 a longer window before concluding (only ~120 days here).
 
-**Trading-strategy implication.** Buying NO on YES-favorite markets to "catch
-reversals" — the obvious play if the tail-overpricing thesis held — is a money
-loser in this sample:
+**Trading-strategy implication.** Buying NO on the most-favored YES markets
+(YES ≥ 0.92) loses everywhere. But once we expand to all 9 daily-weather
+cities (`results/market_dataset_allcities.parquet`, n = 46,539 snapshots
+across NYC + Atlanta, Austin, Chicago, Dallas, Denver, Houston, Miami,
+Seattle), a clear picture emerges:
 
-  * T=1h, buy NO when YES ≥ 0.70 (n=93 trades): realized NO winrate 7.5%
-    vs avg NO cost 10.1% → **ROI −26%**.
-  * T=3h, same rule (n=41): ROI −26%.
-  * Only the narrow band p_market ∈ [0.72, 0.78] shows a hint of +EV NO,
-    but Wilson CI is wide (n ≤ 8 per bucket).
+  * **Strong-favorite (YES ≥ 0.92)**: NO loses across all leads — −45 to
+    −100% ROI. The model is correctly confident here, and at T = 48h
+    NO at this band paid $0 on 34 bets in a row.
+  * **Moderate-favorite (YES 0.10–0.50) at lead 24–72h**: NO is a real edge.
+    Best buckets (Wilson 95% CI lower bound above NO price, n ≥ 500):
+      * T=24h, YES 0.20–0.30 (n=680): NO ROI **+7.4%**
+      * T=48h, YES 0.20–0.30 (n=1,130): NO ROI **+8.7%**
+      * T=48h, YES 0.30–0.50 (n=899): NO ROI **+6.5%**
+      * T=72h, YES 0.10–0.20 (n=379): NO ROI **+7.6%**
+  * **Longshot YES tail (p ≤ 0.05) at T = 48–72h**: NO at ≥0.95 is +0.6–1.1%
+    ROI, statistically significant on huge n but tiny absolute edge.
+
+The user's intuition "buying NO is +EV" holds — but the edge lives in the
+**moderate-favorite band at multi-day leads**, not at YES ≥ 0.92 where the
+NBM forecast already removes most uncertainty.
+
+The full lead × price-band EV table is frozen in
+`results/buy_no_ev_by_lead_and_band.parquet`.
 
 ## NBM forecast accuracy at peak-heating lead times
 
@@ -89,10 +104,13 @@ cached Polymarket data is the obvious next step.
 pip install -e .                    # cfgrib needs system libeccodes; see README
 python -m pytest tests/ -v          # 8/8 should pass
 
-# Fetch real data (requires the allowlisted hosts). The Polymarket
-# "nyc-daily-weather" series started 2025-01-21 — earlier dates won't return
-# anything.
-polycal fetch-polymarket --start 2025-06-01 --end 2025-09-30
+# Fetch real data (requires the allowlisted hosts). Polymarket daily-weather
+# series started 2025-01-21 for NYC, late 2025 for other cities.
+polycal fetch-polymarket --start 2025-01-01 --end 2026-05-12 \
+    --series nyc-daily-weather
+# Other series: chicago-, miami-, dallas-, atlanta-, seattle-, denver-,
+# houston-, austin-daily-weather. Each is cached under
+# cache/polymarket/<series>/ except NYC which uses cache/polymarket/.
 polycal market-calibration --start 2025-06-01 --end 2025-09-30
 
 # Outputs to cache/derived/:
