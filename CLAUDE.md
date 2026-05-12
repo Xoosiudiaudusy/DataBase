@@ -34,22 +34,40 @@ results/                 frozen plots and parquet from earlier backfills
 cache/                   gitignored: actuals/, forecasts/, polymarket/, derived/
 ```
 
-## Active question (status: open)
+## Active question (status: first result, hypothesis NOT confirmed)
 
-**Does Polymarket overprice high-price YES contracts?** The math is wired up,
-but no real result yet — the previous session couldn't reach Polymarket/Mesonet
-from its sandbox. Network allowlist has now been extended (see below). The next
-session should be able to actually run the pipeline end to end.
+**Does Polymarket overprice high-price YES contracts?** First end-to-end run on
+**summer 2025** (Jun 1 – Sep 30, KLGA, 122 events, 854 binary markets, 4,114
+price snapshots across 5 lead times). Frozen artifacts:
+`results/market_calibration_polymarket_summer2025.{png,parquet}`.
+
+Findings (lead times T = 1h / 3h, where signal is sharpest):
+  - **High-price tail (p ≥ 0.85)**: `p_hat` lies AT or ABOVE `mean_price`, not
+    below. At T=1h, n=33 markets at mean 0.984 → realized winrate 1.00. At
+    T=1h, n=14 at mean 0.93 → 1.00. Favorites are not overpriced; if anything
+    slightly underpriced (the NO side at p≈0.02 never won).
+  - **Low-price tail (p ≤ 0.05)**: tiny overpricing of YES. At T=1h, n=549,
+    mean 0.0045 → realized 0.0036. Real but the gap is well within Wilson CI.
+  - **Mid range (0.2–0.8)** scatters around the diagonal; CIs wide due to
+    bucket-market sparsity.
+
+So the original "tails are overpriced" thesis is **not** supported in this
+window. The pattern is asymmetric and well-known from prediction-market
+literature: longshots slightly overpriced, favorites at or above fair. Both
+effects are small at peak-heating lead times and noisy at longer leads. Worth
+a longer window before concluding (only ~120 days here).
 
 ## How to run
 
 ```bash
 pip install -e .                    # cfgrib needs system libeccodes; see README
-PYTHONPATH=src python -m pytest tests/ -v    # 8/8 should pass
+python -m pytest tests/ -v          # 8/8 should pass
 
-# Fetch real data (requires the allowlisted hosts):
-polycal fetch-polymarket --start 2024-06-01 --end 2024-10-31
-polycal market-calibration --start 2024-06-01 --end 2024-10-31
+# Fetch real data (requires the allowlisted hosts). The Polymarket
+# "nyc-daily-weather" series started 2025-01-21 — earlier dates won't return
+# anything.
+polycal fetch-polymarket --start 2025-06-01 --end 2025-09-30
+polycal market-calibration --start 2025-06-01 --end 2025-09-30
 
 # Outputs to cache/derived/:
 #   market_dataset_polymarket_<start>_<end>.parquet
@@ -59,7 +77,7 @@ polycal market-calibration --start 2024-06-01 --end 2024-10-31
 
 The plot is the deliverable. Look at the `T = 1h` and `T = 3h` lines around
 `price ≥ 0.85` — if `p_hat` lies clearly below `mean_price` with Wilson CI not
-crossing the diagonal, the overpricing claim holds.
+crossing the diagonal, the overpricing claim holds. (Current run: it doesn't.)
 
 ## Network expectations
 
@@ -97,6 +115,17 @@ container (a fresh cloud container does not inherit trust from earlier ones).
 - `actuals_source` default is `mesonet`; switch to `isd` only if Mesonet is
   blocked. ISD on S3 is more austere (quality codes, fewer obs) but always
   reachable from AWS-friendly networks.
+- Polymarket NYC daily-temp markets live under series `nyc-daily-weather`
+  (gamma param `series_slug=nyc-daily-weather`). Tag-based discovery
+  (`tag_slug=weather`) misses them entirely. Series started 2025-01-21.
+- The 2025 series mixes three market shapes — "X°F or below", "X°F or above",
+  "between X-Y°F". So `yes_won = (actual_high >= threshold)` is wrong for
+  most rows. `extract_markets` parses the resolved outcome directly from
+  `outcomePrices` (`["1","0"]` → YES won) and stores it as `yes_won_final`;
+  `join_with_actuals` reads that column when `markets` is passed in.
+- CLOB `prices-history` caps `(endTs − startTs) ≤ 360h (15 days)` at
+  `fidelity=60`. Window in `fetch_polymarket.run` is `[resolve − 14d,
+  resolve + 1d]` = exactly 15 days; do not enlarge or every request 400s.
 
 ## Branch convention
 
