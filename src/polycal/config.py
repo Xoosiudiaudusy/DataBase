@@ -25,6 +25,12 @@ ACTUALS_SOURCE_DEFAULT = "mesonet"
 MODEL_DEFAULT = "nbm"         # one of {"nbm", "hrrr"}
 LEAD_TIMES_HOURS = [1, 3, 6, 12, 24]
 
+# Lead-time anchor: hour-of-day (local time) representing peak heating.
+# "T hours before peak" is what we ask of the forecast — a real test of skill,
+# not a nowcast collapsed by post-peak observations. 17:00 local ≈ when daily
+# max is typically reached in NYC summer (slightly earlier in winter).
+PEAK_HOUR_LOCAL = 17
+
 # Daily-max forecast window, UTC. NY 07:00 EST → 18:00 EST (or 08-19 EDT).
 DAILY_WINDOW_UTC_HOURS = list(range(12, 24))  # 12,13,...,23
 

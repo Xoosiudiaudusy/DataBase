@@ -4,18 +4,18 @@ NBM (CONUS, hourly) is the primary model; HRRR is the fallback. We pull the
 2 m temperature field at the station grid point for every hourly step in the
 12–23 UTC daily window of day D, then take the max as the forecast daily high.
 
-Lead-time semantics (per spec):
-    issue_utc = floor_hour( local(D 23:59) - lead_hours )
+Lead-time semantics (peak-anchored):
+    issue_utc = floor_hour( local(D, PEAK_HOUR_LOCAL) - lead_hours )
 where local() converts a naive timestamp in America/New_York to UTC. The
-floor handles DST and the fact that NBM/HRRR run on the hour.
+floor handles DST and the fact that NBM/HRRR run on the hour. "T hours
+before peak heating" is what we test against — a real forecast question,
+not a nowcast already settled by post-peak observations.
 
-For short lead times where ``issue_utc`` lies inside or after the daily
-window, we splice: ISD/Mesonet observations cover ``valid_time < issue_utc``
-and the NBM forecast covers ``valid_time >= issue_utc``. That mirrors what a
-Polymarket trader sees at e.g. 9 PM EDT — peak heating already observed, only
-a short forecast tail remains. With ``allow_obs_splice=False`` the function
-returns ``None`` for any (date, lead) whose issue time has no forecast steps
-inside the window — that matches the strict spec interpretation.
+When ``issue_utc`` lies *inside* the daily window (short lead times such as
+T=1h, T=3h with morning hours already observed), we splice: ISD/Mesonet
+observations cover ``valid_time < issue_utc`` and the NBM forecast covers
+``valid_time >= issue_utc``. The trader at issue_time knows what's already
+been observed. Set ``allow_obs_splice=False`` for pure-forecast mode.
 """
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from .config import (
     DAILY_WINDOW_UTC_HOURS,
     FORECAST_CACHE,
     LOCAL_TZ,
+    PEAK_HOUR_LOCAL,
     STATION_LAT,
     STATION_LON,
     kelvin_to_f,
@@ -44,14 +45,14 @@ TMP_2M_REGEX = ":TMP:2 m above ground:"
 def issue_time_for(local_date: dt.date, lead_hours: int) -> pd.Timestamp:
     """Return the (hour-floored, tz-naive UTC) NBM run time for (date, lead).
 
-    The Polymarket market closes at 23:59 local of day D; the forecast is
-    issued ``lead_hours`` before that.
+    Anchored on peak heating: T hours before ``PEAK_HOUR_LOCAL`` on day D.
+    DST is handled by ``tz_localize(LOCAL_TZ)``.
     """
-    close_local = pd.Timestamp(
+    peak_local = pd.Timestamp(
         year=local_date.year, month=local_date.month, day=local_date.day,
-        hour=23, minute=59,
+        hour=PEAK_HOUR_LOCAL,
     ).tz_localize(LOCAL_TZ)
-    issue = close_local - pd.Timedelta(hours=lead_hours)
+    issue = peak_local - pd.Timedelta(hours=lead_hours)
     issue_utc = issue.tz_convert("UTC").tz_localize(None)
     return issue_utc.floor("h")
 
