@@ -81,7 +81,8 @@ def _grid_index(model: str) -> tuple[int, int]:
     # Recent NBM/HRRR run that is virtually guaranteed to exist.
     sample_run = pd.Timestamp.utcnow().tz_localize(None).floor("h") - pd.Timedelta(hours=6)
     product = "co" if model == "nbm" else "sfc"
-    h = Herbie(sample_run, model=model, product=product, fxx=1, verbose=False)
+    h = Herbie(sample_run, model=model, product=product, fxx=1,
+               priority=["aws"], verbose=False)
     ds = h.xarray(TMP_2M_REGEX, remove_grib=False)
     lat = np.asarray(ds["latitude"])
     lon = np.asarray(ds["longitude"])
@@ -106,20 +107,29 @@ def fetch_forecast_temps(
 ) -> pd.DataFrame:
     """For one model run, fetch t2m at the station for each fxx.
 
-    Returns DataFrame: valid_time_utc, fxx, t2m_f.
+    Returns DataFrame: valid_time_utc, fxx, t2m_f. Per-fxx failures (file
+    missing on S3, GRIB extraction errors) are skipped, not raised — the
+    daily-max max() will still work on whatever survives.
     """
     from herbie import Herbie
 
     product = "co" if model == "nbm" else "sfc"
     rows: list[dict] = []
     for fxx in fxx_iter:
-        h = Herbie(
-            issue_utc.to_pydatetime(),
-            model=model, product=product, fxx=fxx,
-            verbose=False,
-        )
-        ds = h.xarray(TMP_2M_REGEX, remove_grib=False)
-        t2m_f = _extract_t2m_f(ds, model)
+        try:
+            h = Herbie(
+                issue_utc.to_pydatetime(),
+                model=model, product=product, fxx=fxx,
+                priority=["aws"],  # skip NOMADS — broken SSL in some sandboxes
+                verbose=False,
+            )
+            if getattr(h, "grib", None) is None:
+                continue
+            ds = h.xarray(TMP_2M_REGEX, remove_grib=False)
+            t2m_f = _extract_t2m_f(ds, model)
+        except Exception as e:
+            print(f"  [skip] {model} run={issue_utc:%Y-%m-%dT%H} fxx={fxx}: {type(e).__name__}: {e}")
+            continue
         valid = issue_utc + pd.Timedelta(hours=fxx)
         rows.append({"valid_time_utc": valid, "fxx": fxx, "t2m_f": t2m_f})
     return pd.DataFrame(rows)
