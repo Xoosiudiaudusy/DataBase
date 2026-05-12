@@ -6,7 +6,11 @@
         "gamma-api.polymarket.com",
         "clob.polymarket.com",
         "data-api.polymarket.com",
-        "docs.polymarket.com"
+        "docs.polymarket.com",
+        "mesonet.agron.iastate.edu",
+        "noaa-global-hourly-pds.s3.amazonaws.com",
+        "noaa-nbm-grib2-pds.s3.amazonaws.com",
+        "noaa-hrrr-bdp-pds.s3.amazonaws.com"
       ]
     }
   }
