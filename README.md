@@ -51,14 +51,44 @@ Output goes to `cache/derived/`:
 
 ```
 src/polycal/
-  config.py            station / coords / lead times / cache layout
-  fetch_actuals.py     Iowa Mesonet ASOS (cached per year)
-  fetch_forecasts.py   NBM (default) or HRRR via Herbie, per-day parquet cache
-  build_dataset.py     join forecasts × actuals, expand thresholds
-  calibration.py       Wilson CI, spread bucketing, theoretical normal curve
-  plot.py              matplotlib figure
-  main.py              CLI entry point
+  config.py             station / coords / lead times / cache layout
+  fetch_actuals.py      Iowa Mesonet ASOS or NOAA ISD S3 (cached per year)
+  fetch_forecasts.py    NBM (default) or HRRR via Herbie, per-day parquet cache
+  fetch_polymarket.py   Polymarket Gamma + CLOB, event/market metadata + prices
+  build_dataset.py      join forecasts × actuals, expand thresholds
+  calibration.py        Wilson CI, spread bucketing, theoretical normal curve
+  market_calibration.py snapshot prices at lead times, join actuals, bin by price
+  plot.py               forecast calibration figure
+  plot_market.py        market calibration figure (winrate vs YES price)
+  main.py               CLI entry point
 ```
+
+## Market calibration
+
+The forecast calibration above is the prior. The actual hypothesis under test —
+"Polymarket overprices the tails" — needs the market itself. Two-step:
+
+```bash
+# 1. Fetch cached prices+markets for the window (writes cache/polymarket/).
+polycal fetch-polymarket --start 2024-06-01 --end 2024-10-01
+
+# 2. Snapshot YES price at each lead time, join with actuals, bin by price.
+polycal market-calibration --start 2024-06-01 --end 2024-10-01
+```
+
+Output goes to `cache/derived/`:
+
+- `market_dataset_polymarket_<start>_<end>.parquet` — per-(market, lead_time)
+  snapshot rows: market_id, threshold_f, lead_time, p_market, actual_high_f,
+  yes_won.
+- `market_calibration_polymarket_<start>_<end>.parquet` — bucketed table:
+  bin_center, n, k, p_hat, Wilson lo/hi, mean_price.
+- `market_calibration_polymarket_<start>_<end>.png` — empirical P(YES) vs
+  market YES price, one line per lead time, with the y = x diagonal overlaid.
+
+A perfectly calibrated market sits on the diagonal. If the curve at `T = 1h`
+sags below the diagonal at price ≥ 0.85 — say empirical winrate is 0.78 when
+the market is at 0.92 — that's the overpricing signal we were after.
 
 ## Lead-time semantics
 
@@ -84,7 +114,7 @@ in that situation really is overpriced.
 
 ## Out of scope (this iteration)
 
-- Polymarket price data — next step, after the calibration curve is solid.
 - ML / regression — straight bucket aggregation only.
+- Trading P&L sizing / Kelly. Calibration is a precondition, not a strategy.
 - Other cities (London EGLC, Miami KMIA, LA KLAX). NBM/HRRR are CONUS only;
   London needs GFS or ECMWF IFS.
