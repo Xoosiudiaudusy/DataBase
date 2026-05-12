@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polycal"
+version = "0.1.0"
+description = "Calibration backtest of NOAA temperature forecasts vs realized highs (Polymarket NYC market)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "herbie-data>=2024.5.0",
+    "xarray>=2024.1.0",
+    "cfgrib>=0.9.10",
+    "pandas>=2.1",
+    "numpy>=1.26",
+    "requests>=2.31",
+    "scipy>=1.11",
+    "matplotlib>=3.8",
+    "pyarrow>=15.0",
+    "tqdm>=4.66",
+]
+
+[project.scripts]
+polycal = "polycal.main:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"

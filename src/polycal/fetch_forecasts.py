@@ -1,0 +1,161 @@
+"""NOAA forecast retrieval via Herbie.
+
+NBM (CONUS, hourly) is the primary model; HRRR is the fallback. We pull the
+2 m temperature field at the station grid point for every hourly step in the
+12–23 UTC daily window of day D, then take the max as the forecast daily high.
+
+Lead-time semantics (per spec):
+    issue_utc = floor_hour( local(D 23:59) - lead_hours )
+where local() converts a naive timestamp in America/New_York to UTC. The
+floor handles DST and the fact that NBM/HRRR run on the hour.
+
+Caveat: for small lead times (1, 3, 6 h) the issue time falls inside or
+after the daily window, so only the tail of the window is covered. This is
+documented as a feature: it shows the nowcast collapsing the forecast spread.
+"""
+from __future__ import annotations
+
+import datetime as dt
+import functools
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+import pandas as pd
+
+from .config import (
+    DAILY_WINDOW_UTC_HOURS,
+    FORECAST_CACHE,
+    LOCAL_TZ,
+    STATION_LAT,
+    STATION_LON,
+    kelvin_to_f,
+)
+
+# Variable regex shared by NBM CONUS and HRRR sfc products.
+TMP_2M_REGEX = ":TMP:2 m above ground:"
+
+
+def issue_time_for(local_date: dt.date, lead_hours: int) -> pd.Timestamp:
+    """Return the (hour-floored, tz-naive UTC) NBM run time for (date, lead).
+
+    The Polymarket market closes at 23:59 local of day D; the forecast is
+    issued ``lead_hours`` before that.
+    """
+    close_local = pd.Timestamp(
+        year=local_date.year, month=local_date.month, day=local_date.day,
+        hour=23, minute=59,
+    ).tz_localize(LOCAL_TZ)
+    issue = close_local - pd.Timedelta(hours=lead_hours)
+    issue_utc = issue.tz_convert("UTC").tz_localize(None)
+    return issue_utc.floor("h")
+
+
+def fxx_list_for(issue_utc: pd.Timestamp, local_date: dt.date) -> list[int]:
+    """fxx values whose valid_time falls in [12Z(D), 23Z(D)].
+
+    Returns an empty list if the issue time is past the end of the window.
+    """
+    out = []
+    for h in DAILY_WINDOW_UTC_HOURS:
+        valid = pd.Timestamp(local_date) + pd.Timedelta(hours=h)
+        fxx = int((valid - issue_utc).total_seconds() // 3600)
+        if fxx >= 0:
+            out.append(fxx)
+    return out
+
+
+@functools.lru_cache(maxsize=4)
+def _grid_index(model: str) -> tuple[int, int]:
+    """Locate the nearest grid index to the station once per model.
+
+    We do a one-shot Herbie pull of a tiny known-good run to learn (i, j).
+    """
+    from herbie import Herbie  # local import keeps top-level import cheap
+
+    # Recent NBM/HRRR run that is virtually guaranteed to exist.
+    sample_run = pd.Timestamp.utcnow().tz_localize(None).floor("h") - pd.Timedelta(hours=6)
+    product = "co" if model == "nbm" else "sfc"
+    h = Herbie(sample_run, model=model, product=product, fxx=1, verbose=False)
+    ds = h.xarray(TMP_2M_REGEX, remove_grib=False)
+    lat = np.asarray(ds["latitude"])
+    lon = np.asarray(ds["longitude"])
+    # longitude can be 0-360; normalize to (-180, 180].
+    lon = np.where(lon > 180, lon - 360, lon)
+    dist = (lat - STATION_LAT) ** 2 + (lon - STATION_LON) ** 2
+    i, j = np.unravel_index(int(np.argmin(dist)), dist.shape)
+    return int(i), int(j)
+
+
+def _extract_t2m_f(ds, model: str) -> float:
+    """Pull the station-pixel 2m temperature in °F from a Herbie xarray ds."""
+    i, j = _grid_index(model)
+    # 2m temp variable name from cfgrib is conventionally "t2m".
+    arr = ds["t2m"] if "t2m" in ds else ds[list(ds.data_vars)[0]]
+    val_k = float(np.asarray(arr)[i, j])
+    return kelvin_to_f(val_k)
+
+
+def fetch_forecast_temps(
+    issue_utc: pd.Timestamp, fxx_iter: Iterable[int], model: str = "nbm"
+) -> pd.DataFrame:
+    """For one model run, fetch t2m at the station for each fxx.
+
+    Returns DataFrame: valid_time_utc, fxx, t2m_f.
+    """
+    from herbie import Herbie
+
+    product = "co" if model == "nbm" else "sfc"
+    rows: list[dict] = []
+    for fxx in fxx_iter:
+        h = Herbie(
+            issue_utc.to_pydatetime(),
+            model=model, product=product, fxx=fxx,
+            verbose=False,
+        )
+        ds = h.xarray(TMP_2M_REGEX, remove_grib=False)
+        t2m_f = _extract_t2m_f(ds, model)
+        valid = issue_utc + pd.Timedelta(hours=fxx)
+        rows.append({"valid_time_utc": valid, "fxx": fxx, "t2m_f": t2m_f})
+    return pd.DataFrame(rows)
+
+
+def _per_day_cache(model: str, local_date: dt.date, issue_utc: pd.Timestamp) -> Path:
+    sub = FORECAST_CACHE / model / f"{local_date:%Y}" / f"{local_date:%m}"
+    sub.mkdir(parents=True, exist_ok=True)
+    return sub / f"forecast_high_{local_date:%Y-%m-%d}_{issue_utc:%Y%m%dT%HZ}.parquet"
+
+
+def forecast_high_for_day(
+    local_date: dt.date, lead_hours: int, model: str = "nbm",
+) -> dict | None:
+    """Compute (and cache) the forecast daily high for one (date, lead).
+
+    Returns ``None`` when the issue time is past the end of the daily window
+    (no fxx covers the window). Cached at the per-day parquet layer.
+    """
+    issue_utc = issue_time_for(local_date, lead_hours)
+    cache_path = _per_day_cache(model, local_date, issue_utc)
+
+    if cache_path.exists():
+        steps = pd.read_parquet(cache_path)
+    else:
+        fxx_iter = fxx_list_for(issue_utc, local_date)
+        if not fxx_iter:
+            return None
+        steps = fetch_forecast_temps(issue_utc, fxx_iter, model=model)
+        steps.insert(0, "local_date", local_date)
+        steps.insert(1, "model", model)
+        steps.insert(2, "run_hour_utc", issue_utc)
+        steps.to_parquet(cache_path, index=False)
+
+    if steps.empty:
+        return None
+
+    return {
+        "local_date": local_date,
+        "lead_time": lead_hours,
+        "run_hour_utc": issue_utc,
+        "forecast_high_f": float(steps["t2m_f"].max()),
+        "n_steps": int(len(steps)),
+    }
