@@ -57,16 +57,97 @@ literature: longshots slightly overpriced, favorites at or above fair. Both
 effects are small at peak-heating lead times and noisy at longer leads. Worth
 a longer window before concluding (only ~120 days here).
 
+**Trading-strategy implication.** Buying NO on the most-favored YES markets
+(YES ≥ 0.92) loses everywhere. But once we expand to all 9 daily-weather
+cities (`results/market_dataset_allcities.parquet`, n = 46,539 snapshots
+across NYC + Atlanta, Austin, Chicago, Dallas, Denver, Houston, Miami,
+Seattle), a clear picture emerges:
+
+  * **Strong-favorite (YES ≥ 0.92)**: NO loses across all leads — −45 to
+    −100% ROI. The model is correctly confident here, and at T = 48h
+    NO at this band paid $0 on 34 bets in a row.
+  * **Moderate-favorite (YES 0.10–0.50) at lead 24–72h**: NO is a real edge.
+    Best buckets (Wilson 95% CI lower bound above NO price, n ≥ 500):
+      * T=24h, YES 0.20–0.30 (n=680): NO ROI **+7.4%**
+      * T=48h, YES 0.20–0.30 (n=1,130): NO ROI **+8.7%**
+      * T=48h, YES 0.30–0.50 (n=899): NO ROI **+6.5%**
+      * T=72h, YES 0.10–0.20 (n=379): NO ROI **+7.6%**
+  * **Longshot YES tail (p ≤ 0.05) at T = 48–72h**: NO at ≥0.95 is +0.6–1.1%
+    ROI, statistically significant on huge n but tiny absolute edge.
+
+The user's intuition "buying NO is +EV" holds — but the edge lives in the
+**moderate-favorite band at multi-day leads**, not at YES ≥ 0.92 where the
+NBM forecast already removes most uncertainty.
+
+The full lead × price-band EV table is frozen in
+`results/buy_no_ev_by_lead_and_band.parquet`.
+
+## NBM forecast accuracy at peak-heating lead times
+
+A 31-day NBM backfill on July 2025 (`results/dataset_nbm_jul2025.parquet`)
+shows why high-confidence Polymarket favorites resolve at 100%:
+
+  * **T = 1h**: MAE = 0.27 °F, median |err| = 0 °F, 84% of days within ±0.5 °F.
+    The forecast at 16:00 EDT (obs-spliced through 16Z) essentially knows
+    the answer. Only 1/31 days had |err| > 1 °F.
+  * **T = 3h**: MAE = 1.15 °F, **bias = −0.81 °F** (consistent under-
+    forecast), 45% of days |err| > 1 °F, 19% > 2 °F. Worst miss 4.2 °F low.
+
+The −0.81 °F bias at T=3h is the more actionable finding. On "≤ X°F or below"
+markets where X is just above NBM's T=3h forecast, the actual high comes in
+above X more often than the market prices imply. Pricing this out vs the
+cached Polymarket data is the obvious next step.
+
+## Polymarket price ↔ NBM forecast lag (multi-city, Apr–May 2026)
+
+Adds the `polycal_lag/` package: per-city station table (KLGA, KORD, KMIA,
+KDAL, KATL, KSEA, KBKF for Denver (Buckley not DEN!), KHOU for Houston
+(Hobby not IAH), KAUS), a batched NBM extractor that pulls one GRIB and
+reads t2m at all 9 station pixels, and a lag analyzer.
+
+Window: Apr 1 – May 12 2026, 9 cities, 3,402 bucket markets total, 809 with
+strong-enough price movement (span ≥ 0.3) and forecast coverage.
+Frozen artifacts: `results/lag_analysis_apr_may_2026.{parquet,png}`.
+
+Findings:
+  * Mean Pearson correlation between Polymarket YES price and NBM-implied
+    bucket P(YES) is **ρ ≈ 0.46** on the full set; **ρ ≈ 0.80** on the top
+    half by signal strength. So price and forecast are clearly linked.
+  * On the 411 markets with ρ > 0.6, **median lag is exactly 0 minutes** —
+    no systematic lead/lag at the 5-minute resolution.
+  * BUT the per-market IQR is wide (≈ ±115 min): individual markets drift
+    independently around the forecast. Only 20–35 % of strongly-correlated
+    markets are within ±15–60 min of the forecast.
+  * 38 % of the 809 markets hit the ±180-min cross-correlation boundary,
+    meaning their actual lag is undetermined at this resolution.
+
+Interpretation: Polymarket prices track NBM in direction but **not 1:1
+hourly**. Traders likely blend NBM with HRRR (hourly updates), METAR
+observations, and order-flow dynamics. So forecast updates are necessary
+but not sufficient to predict Polymarket movement.
+
+### Tick data note
+
+CLOB `/trades` (on `data-api.polymarket.com`) returns one row per actual
+trade (real tick data): `price`, `size`, `timestamp` (Unix sec),
+`transactionHash`. No auth required for public market data. The hourly
+`prices-history` endpoint misses sub-hour spikes that limit-order
+strategies (e.g. "buy NO at $0.08") can fill on. ~3 K markets × ~200 ticks
+each is cached at `cache/polymarket/ticks/<conditionId>.parquet`.
+
 ## How to run
 
 ```bash
 pip install -e .                    # cfgrib needs system libeccodes; see README
 python -m pytest tests/ -v          # 8/8 should pass
 
-# Fetch real data (requires the allowlisted hosts). The Polymarket
-# "nyc-daily-weather" series started 2025-01-21 — earlier dates won't return
-# anything.
-polycal fetch-polymarket --start 2025-06-01 --end 2025-09-30
+# Fetch real data (requires the allowlisted hosts). Polymarket daily-weather
+# series started 2025-01-21 for NYC, late 2025 for other cities.
+polycal fetch-polymarket --start 2025-01-01 --end 2026-05-12 \
+    --series nyc-daily-weather
+# Other series: chicago-, miami-, dallas-, atlanta-, seattle-, denver-,
+# houston-, austin-daily-weather. Each is cached under
+# cache/polymarket/<series>/ except NYC which uses cache/polymarket/.
 polycal market-calibration --start 2025-06-01 --end 2025-09-30
 
 # Outputs to cache/derived/:

@@ -96,14 +96,20 @@ def parse_threshold(question: str) -> int | None:
     return None
 
 
-def discover_events(start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
-    """Return DataFrame of NYC daily-high temperature events resolving in [start, end].
+def discover_events(
+    start_date: dt.date, end_date: dt.date,
+    series_slug: str = "nyc-daily-weather",
+) -> pd.DataFrame:
+    """Return DataFrame of daily-high temperature events resolving in [start, end].
 
-    Filters by the canonical Polymarket series ``nyc-daily-weather`` (created
-    2025-01-21). Events before that date or in other series won't appear.
+    Filters by the Polymarket series ``series_slug``. Defaults to the NYC
+    series (created 2025-01-21). Other known series: miami-daily-weather,
+    chicago-daily-weather, dallas-daily-weather, atlanta-daily-weather,
+    seattle-daily-weather, denver-daily-weather, houston-daily-weather,
+    austin-daily-weather.
     """
     params = {
-        "series_slug": "nyc-daily-weather",
+        "series_slug": series_slug,
         "closed": "true",
         "archived": "false",
         "end_date_min": f"{start_date.isoformat()}T00:00:00Z",
@@ -113,8 +119,8 @@ def discover_events(start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
     }
     rows = []
     for ev in _paginate_events(params):
-        if not _looks_like_nyc_temp_event(ev):
-            continue
+        # series_slug already constrains to daily-high temperature events for
+        # a single city; no need for slug/title regex filtering on top.
         rows.append({
             "event_id": ev.get("id"),
             "slug": ev.get("slug"),
@@ -211,15 +217,28 @@ def fetch_price_history(
 
 # ---------- orchestration ----------
 
-def run(start_date: dt.date, end_date: dt.date, sleep_s: float = 0.1) -> None:
-    """Discover events in window, persist metadata + price histories."""
-    POLYMARKET_CACHE.mkdir(parents=True, exist_ok=True)
-    events_path = POLYMARKET_CACHE / "events.parquet"
-    markets_path = POLYMARKET_CACHE / "markets.parquet"
-    prices_path = POLYMARKET_CACHE / "prices.parquet"
+def run(
+    start_date: dt.date, end_date: dt.date,
+    sleep_s: float = 0.1,
+    series_slug: str = "nyc-daily-weather",
+    cache_dir: Path | None = None,
+) -> None:
+    """Discover events in window, persist metadata + price histories.
 
-    print(f"Discovering NYC temp events in [{start_date}, {end_date}]...")
-    ev_df = discover_events(start_date, end_date)
+    Per-series cache. The legacy NYC cache stays at POLYMARKET_CACHE/*.parquet
+    for back-compat; other cities go under POLYMARKET_CACHE/<series_slug>/.
+    """
+    base = cache_dir
+    if base is None:
+        base = POLYMARKET_CACHE if series_slug == "nyc-daily-weather" \
+               else POLYMARKET_CACHE / series_slug
+    base.mkdir(parents=True, exist_ok=True)
+    events_path = base / "events.parquet"
+    markets_path = base / "markets.parquet"
+    prices_path = base / "prices.parquet"
+
+    print(f"Discovering {series_slug} events in [{start_date}, {end_date}]...")
+    ev_df = discover_events(start_date, end_date, series_slug=series_slug)
     print(f"  found {len(ev_df)} events")
     if ev_df.empty:
         print("Nothing to do.")

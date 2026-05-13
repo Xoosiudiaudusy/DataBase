@@ -69,11 +69,14 @@ def cli() -> None:
 
     # Polymarket fetcher: discover NYC temp events, save metadata + hourly prices.
     fp = sub.add_parser("fetch-polymarket",
-                        help="Discover NYC temperature markets and fetch hourly price history")
+                        help="Discover daily-temperature markets and fetch hourly price history")
     fp.add_argument("--start", type=_parse_date, required=True)
     fp.add_argument("--end", type=_parse_date, required=True)
     fp.add_argument("--sleep", type=float, default=0.1,
                     help="Pause between CLOB requests, seconds")
+    fp.add_argument("--series", default="nyc-daily-weather",
+                    help="Polymarket series slug (e.g. nyc-daily-weather, "
+                         "chicago-daily-weather, miami-daily-weather)")
 
     # Market calibration: snapshot Polymarket prices at lead times, join actuals,
     # bin by price → empirical winrate vs market YES price.
@@ -103,7 +106,7 @@ def cli() -> None:
 
     if args.cmd == "fetch-polymarket":
         from .fetch_polymarket import run as run_poly
-        run_poly(args.start, args.end, sleep_s=args.sleep)
+        run_poly(args.start, args.end, sleep_s=args.sleep, series_slug=args.series)
         return
 
     if args.cmd == "market-calibration":
