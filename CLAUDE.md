@@ -135,6 +135,50 @@ trade (real tick data): `price`, `size`, `timestamp` (Unix sec),
 strategies (e.g. "buy NO at $0.08") can fill on. ~3 K markets × ~200 ticks
 each is cached at `cache/polymarket/ticks/<conditionId>.parquet`.
 
+## Forecast-vs-market pricing (the big edge)
+
+`polycal_lag/forecast_vs_market.py` joins each bucket-market snapshot at
+lead T ∈ {1, 3, 6, 12, 24, 48}h with the NBM forecast μ for the same
+(city, date, T). For each market we record:
+
+  - `bucket_offset` = bucket midpoint − μ (°F)
+  - `market_yes_price` at that lead
+  - `naive_p` = Φ((hi+0.5−μ)/σ) − Φ((lo−0.5−μ)/σ), σ = 0.5+0.45·√T
+  - `bias_p`  = same with μ ← μ + 0.81 (NBM cold-bias correction)
+  - `yes_won`
+
+Aggregated over 19 893 snapshots (3 402 markets × 6 leads, Apr 1 – May 12
+2026), `results/forecast_vs_market_apr_may_2026.{parquet,png}`:
+
+  * **The market does NOT price the cold bias**: `market_yes_price` is
+    essentially flat at ~0.20 across offsets in [−2, +2] regardless of
+    lead. Naive/bias-corrected NBM curves both peak sharply at offset 0,
+    matching the empirical winrate. Polymarket flattens that peak.
+
+  * **Brier scores** (lower = better forecaster), all 6 leads:
+    - naive NBM:        0.052–0.064
+    - bias-corrected:   0.052–0.058  ← always the best
+    - Polymarket price: 0.057–0.059  ← always **worse** than NBM
+
+  * **Massive edge: buy YES on the bucket nearest the NBM forecast**:
+       T=1h, offset 0  (n=108): mkt 0.174 → empirical 0.380 → **+118% ROI**
+       T=3h, offset 0  (n=122): mkt 0.203 → empirical 0.443 → **+118% ROI**
+       T=12h,offset 0  (n=121): mkt 0.214 → empirical 0.421 → **+97% ROI**
+       T=24h,offset 0  (n=133): mkt 0.211 → empirical 0.368 → **+74% ROI**
+       T=48h,offset 0  (n=121): mkt 0.198 → empirical 0.281 → **+42% ROI**
+    Offsets −1, +1, +2 also +EV with smaller margin.
+
+  * **Buy NO on far-offset buckets** (|offset| ≥ 2, market YES ~ 0.04–0.20):
+    market overprices; NO at $0.80–0.96 wins 80–99% of the time for a
+    modest +EV. This is the buy-NO-at-low-price edge but living on
+    bucket markets, not on "X°F or below" extremes.
+
+Interpretation: traders compress probability across many adjacent buckets
+(textbook longshot/favorite bias from prediction-market literature).
+NBM concentrates it where it should be. The bias-corrected NBM is the
+single best forecaster of bucket outcomes we've found — better than the
+market on every lead.
+
 ## How to run
 
 ```bash
