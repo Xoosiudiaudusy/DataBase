@@ -98,6 +98,43 @@ markets where X is just above NBM's T=3h forecast, the actual high comes in
 above X more often than the market prices imply. Pricing this out vs the
 cached Polymarket data is the obvious next step.
 
+## Polymarket price ↔ NBM forecast lag (multi-city, Apr–May 2026)
+
+Adds the `polycal_lag/` package: per-city station table (KLGA, KORD, KMIA,
+KDAL, KATL, KSEA, KBKF for Denver (Buckley not DEN!), KHOU for Houston
+(Hobby not IAH), KAUS), a batched NBM extractor that pulls one GRIB and
+reads t2m at all 9 station pixels, and a lag analyzer.
+
+Window: Apr 1 – May 12 2026, 9 cities, 3,402 bucket markets total, 809 with
+strong-enough price movement (span ≥ 0.3) and forecast coverage.
+Frozen artifacts: `results/lag_analysis_apr_may_2026.{parquet,png}`.
+
+Findings:
+  * Mean Pearson correlation between Polymarket YES price and NBM-implied
+    bucket P(YES) is **ρ ≈ 0.46** on the full set; **ρ ≈ 0.80** on the top
+    half by signal strength. So price and forecast are clearly linked.
+  * On the 411 markets with ρ > 0.6, **median lag is exactly 0 minutes** —
+    no systematic lead/lag at the 5-minute resolution.
+  * BUT the per-market IQR is wide (≈ ±115 min): individual markets drift
+    independently around the forecast. Only 20–35 % of strongly-correlated
+    markets are within ±15–60 min of the forecast.
+  * 38 % of the 809 markets hit the ±180-min cross-correlation boundary,
+    meaning their actual lag is undetermined at this resolution.
+
+Interpretation: Polymarket prices track NBM in direction but **not 1:1
+hourly**. Traders likely blend NBM with HRRR (hourly updates), METAR
+observations, and order-flow dynamics. So forecast updates are necessary
+but not sufficient to predict Polymarket movement.
+
+### Tick data note
+
+CLOB `/trades` (on `data-api.polymarket.com`) returns one row per actual
+trade (real tick data): `price`, `size`, `timestamp` (Unix sec),
+`transactionHash`. No auth required for public market data. The hourly
+`prices-history` endpoint misses sub-hour spikes that limit-order
+strategies (e.g. "buy NO at $0.08") can fill on. ~3 K markets × ~200 ticks
+each is cached at `cache/polymarket/ticks/<conditionId>.parquet`.
+
 ## How to run
 
 ```bash
