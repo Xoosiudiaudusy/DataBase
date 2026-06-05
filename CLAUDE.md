@@ -34,6 +34,32 @@ results/                 frozen plots and parquet from earlier backfills
 cache/                   gitignored: actuals/, forecasts/, polymarket/, derived/
 ```
 
+## Best strategy found so far (to remember)
+
+**"Buy YES on the bucket nearest the NBM forecast at T=6h"**
+
+Rule (every day, every of the 9 cities):
+  1. At ~T-6h before local peak heating (17:00 local), pull NBM forecast μ.
+  2. Find the bucket-market `[X, X+1]°F` such that `(X+0.5 − μ)` is smallest.
+  3. If `naive NBM P(YES) > market YES price + 0.10`, buy YES at the market.
+  4. Settle automatically at resolution.
+
+Backtest on Apr 1 – May 12 2026 (the same window as
+`results/forecast_vs_market_apr_may_2026.parquet`):
+  - 395 bets, win rate 29.6%, avg cost $0.137
+  - ROI **+116%** flat-stake
+  - Profitable in **7/7 weeks** (per-week ROI +66% to +173%)
+  - Profitable in **9/9 cities**
+  - Max drawdown −$1.64 per $1 stake; longest losing streak 9 in a row
+
+Edge source: probability compression — Polymarket flattens probability
+across adjacent buckets (~0.20 each) while NBM correctly peaks at ~0.40
+for the modal bucket. Doesn't depend on the −0.81 F cold-bias tuning
+(works on naive NBM too).
+
+Caveats: 6-week window only; capacity limited by order-book depth; needs
+real-time NBM access.
+
 ## Active question (status: first result, hypothesis NOT confirmed)
 
 **Does Polymarket overprice high-price YES contracts?** First end-to-end run on
