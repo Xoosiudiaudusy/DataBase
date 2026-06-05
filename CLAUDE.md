@@ -109,6 +109,35 @@ probability. The hand-rolled Gaussian-with-σ-table approach is the dumbest
 possible thing; an ML model could learn city-specific bias and σ from data
 directly.
 
+### Reference dataset: HuggingFace `SII-WANGZJ/Polymarket_data`
+
+163 GB, 1.9 B records, sourced from Polygon blockchain `OrderFilled`
+events. Last modified 2026-05-04 (so trades through ~late April 2026).
+Public, MIT, ungated.
+
+Files:
+- `markets.parquet` (157 MB, 1.02 M markets) — metadata for all PMM
+  markets ever. Schema: id, question, condition_id, token1/2, answer1/2,
+  outcome_prices (JSON), volume, event_id/slug/title, created/end/updated.
+- `trades.parquet` (28 GB, 418 M trades) — processed trade events with
+  market metadata join.
+- `quant.parquet` (28 GB) — YES-normalized perspective (NO trades flipped
+  to `1 - price`, direction flipped). Most convenient for backtest.
+- `orderfilled.parquet` (84 GB) — raw blockchain events.
+- `users.parquet` (23 GB) — per-(maker, taker) split.
+
+For our weather work: of HF's 10 882 bucket markets across the 9 cities
+(Jan 2025 → 2026-05-05), 8 164 overlap with our `/trades`-fetched data
+(94 % match). Saved canonical list to
+`results/weather_markets_canonical.parquet` (10 882 rows, 2.5 MB).
+
+When training the ML model:
+- Use `weather_markets_canonical.parquet` as the master event list.
+- For prices, either re-fetch via `/trades` (free, already known to match)
+  or stream-filter `quant.parquet` from HF Datasets by `condition_id`.
+- Don't blindly download 28 GB; partition-pushdown on `condition_id`
+  isn't supported (single file, no partitions).
+
 ### What honestly survives
 
 - **The structural finding**: Polymarket prices ARE slightly flatter than
