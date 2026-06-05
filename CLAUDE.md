@@ -142,25 +142,69 @@ When training the ML model:
 
 ## ML pipeline (in `src/polycal_ml/`)
 
-Scaffolded for XGBoost training but not run end-to-end yet (depends on
-ASOS cache being populated for all 9 cities, currently only KLGA 2025).
+Data is now fully collected (16 months, 9 cities). Dataset assembled but
+the XGBoost model is NOT yet trained end-to-end.
 
-  - `features.py` — `build_features(FeatureRow)` returns 60+ features:
-    forecast μ at leads 1/3/6/12/24/48 h (+min/std/argmax), observation
+  - `features.py` — `build_features(FeatureRow)` returns 64 features:
+    forecast μ at leads 1/3/6/12/24/48 h (+min/std/argmax), `fc_spliced_daily_max`
+    (= max of forecast and observed max-so-far — see note below), observation
     deltas, bucket geometry, calendar, city, market microstructure
-    (price + staleness + tick count). All NULL when source data missing.
+    (price + staleness + tick count). Reads NBM from the consolidated
+    `cache/forecasts/nbm_extracts.parquet` (lazy module-level index).
   - `data_builder.py` — iterates `weather_markets_canonical.parquet`
-    over a date range, builds one row per (market × decision_lead).
+    over a date range, one row per (market × decision_lead).
   - `train.py` — walk-forward CV (default 30-day folds, 90-day warmup),
     XGBoost binary classifier, isotonic calibration on held-out slice,
     fold-level Brier/AUC/logloss + strategy ROI at margins {0.05, 0.10}.
-  - `tests/test_polycal_ml.py` — smoke tests for feature schema, fold
-    generation, P&L math, and discovery; all green.
+  - `restore_ticks.py` — re-derive per-market tick files from HF
+    quant.parquet (the 181 MB weather_trades and 13K tick files are NOT
+    committed; this rebuilds them in ~5 min).
+  - `tests/test_polycal_ml.py` — smoke tests; 5 tests, all green (13 total).
 
 Critical: `market_features(condition_id, yes_token, target_ts)` sorts
 the tick parquet before `iloc[-1]` (the bug that fooled us earlier). It
 returns `(market_yes_price, price_staleness_min, n_ticks_before_target)`
 — the staleness is fed to the model so it can discount very-old prices.
+
+### Subtlety: short-lead "forecast daily max"
+
+`nbm_forecast_max(city, date, lead)` takes the max over forecast steps in
+the 12-23 UTC daylight window whose valid_time ≥ issue_time. At short leads
+(T=1h, issue=20 UTC for an ET city) the window only covers 21-23 UTC — but
+the actual daily peak may have ALREADY happened (e.g. 18-20 UTC). So pure
+`mu_L1h` has a COLD bias and WORSE MAE than `mu_L24h` (measured: NYC T=1h
+MAE 2.46 °F vs T=24h MAE 2.00 °F). This is correct data, not a bug — the
+fix is `fc_spliced_daily_max = max(mu_now, obs_max_so_far_today)`, which is
+the trader's actual best estimate. Both inputs are knowable at decision
+time (no leakage). The model gets all of mu_L*, obs_max_so_far, and the
+spliced value, so it can learn the right combination.
+
+### Collected data (this session)
+
+  - `cache/forecasts/nbm_extracts.parquet` — 68,412 rows, one per
+    (issue_utc, fxx), 9 city t2m °F columns. 97.5 % of (city, date, lead)
+    decision points covered Jan 2025 → May 2026; the 2.5 % gaps are
+    genuine holes in the NOAA archive (a retry pass recovered ~1 of 14 868
+    "missing", confirming they're permanent). 3 h 11 min to collect at
+    ~7 GRIB/s. **Copied to `results/data_cache/` so it survives** (1.5 MB).
+  - `cache/actuals/mesonet_*.parquet` — 9 stations × 2025+2026 ASOS, all
+    forced tz-naive (the LGA 2025 file was tz-aware and broke comparisons;
+    `asos_backfill.py` now strips tz). Copied to `results/data_cache/actuals/`.
+  - per-market ticks: 13 K files from HF quant.parquet (YES-normalized,
+    verified to match data-api /trades to the cent). Re-derivable via
+    `restore_ticks.py`, not committed.
+
+### Assembled dataset
+
+`results/ml_dataset_2025-01-21_2026-05-05.parquet`: 8,196 rows × 64 cols,
+T=6h decision lead, all 9 cities. Validation:
+  - feature coverage 99.6-100 % on all key columns (obs features now
+    populated since ASOS backfill)
+  - target 11.2 % YES (≈ 1 of 9 buckets wins, as expected)
+  - **anti-reverse-bug check passes**: market price AND empirical winrate
+    both peak at offset 0-1 (mkt 0.38/0.44, emp 0.40/0.41) and decline
+    symmetrically — they track each other, proving correct price extraction
+  - median price staleness 20 min, 65 % within 60 min of target
 
 In-sample proof-of-concept dataset (Apr 1 – May 12 2026) at
 `results/ml_dataset_2026-04-01_2026-05-12.parquet`: 2 883 rows × 62 cols.

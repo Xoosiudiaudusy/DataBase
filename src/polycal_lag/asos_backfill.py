@@ -26,6 +26,10 @@ def pull_station_year(icao_3: str, year: int, max_retries: int = 5) -> pd.DataFr
             df = pd.read_csv(io.StringIO(r.text))
             if df.empty: return df
             df["valid_utc"] = pd.to_datetime(df["valid"])
+            # Force tz-naive UTC for consistency with the forecast cache and
+            # features.py (mixing tz-aware and tz-naive breaks comparisons).
+            if df["valid_utc"].dt.tz is not None:
+                df["valid_utc"] = df["valid_utc"].dt.tz_localize(None)
             return df[["valid_utc", "tmpf"]].dropna().sort_values("valid_utc").reset_index(drop=True)
         except requests.HTTPError as e:
             if e.response is not None and e.response.status_code == 429:

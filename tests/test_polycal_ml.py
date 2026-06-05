@@ -31,9 +31,13 @@ def test_feature_row_keys_complete():
 
 
 def test_nbm_max_missing_returns_none(tmp_path, monkeypatch):
-    """If GRIB cache is empty, nbm_forecast_max returns None gracefully."""
-    monkeypatch.setattr("polycal_ml.features.GRIB_EXT", tmp_path)
-    assert nbm_forecast_max("nyc", dt.date(2026, 1, 1), 6) is None
+    """With both the consolidated parquet and per-file extracts absent,
+    nbm_forecast_max returns None gracefully."""
+    import polycal_ml.features as feat
+    monkeypatch.setattr(feat, "GRIB_EXT", tmp_path)
+    monkeypatch.setattr(feat, "NBM_PARQUET", tmp_path / "nope.parquet")
+    monkeypatch.setattr(feat, "_NBM_CACHE", None)  # force reload of empty index
+    assert nbm_forecast_max("nyc", dt.date(2099, 1, 1), 6) is None
 
 
 def test_walk_forward_folds():

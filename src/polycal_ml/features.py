@@ -31,39 +31,64 @@ TICKS_CACHE = Path("cache/polymarket/ticks")
 
 # ---------------- NBM forecast helpers ----------------
 
-def nbm_forecast_max(city: str, date: dt.date, lead_h: int) -> float | None:
-    """Forecast daily-max temperature at `lead_h` before peak_utc(city, date).
+NBM_PARQUET = Path("cache/forecasts/nbm_extracts.parquet")
+_NBM_CACHE: dict | None = None
 
-    Computed from cached GRIB extracts: take max over all fxx in the
-    daylight window of `date`.
-    """
+
+def _nbm_index() -> dict:
+    """Lazy-load the big NBM extract parquet into a dict keyed by
+    (issue_utc, fxx) -> {city: t2m_f}. Falls back to per-file GRIB extracts
+    if the consolidated parquet is absent."""
+    global _NBM_CACHE
+    if _NBM_CACHE is not None:
+        return _NBM_CACHE
+    _NBM_CACHE = {}
+    if NBM_PARQUET.exists():
+        df = pd.read_parquet(NBM_PARQUET)
+        df["issue_utc"] = pd.to_datetime(df["issue_utc"])
+        cities = [c for c in STATIONS if c in df.columns]
+        for r in df.itertuples(index=False):
+            key = (getattr(r, "issue_utc"), int(getattr(r, "fxx")))
+            _NBM_CACHE[key] = {c: getattr(r, c) for c in cities}
+    return _NBM_CACHE
+
+
+def _forecast_steps(city: str, date: dt.date, lead_h: int) -> list[tuple]:
+    """Return [(valid_time, t2m_f), ...] for the daylight window of `date`
+    given the issue time `lead_h` before peak. Reads the consolidated
+    parquet; falls back to per-file extracts."""
     p = peak_utc(city, date)
     issue = (p - pd.Timedelta(hours=lead_h)).floor("h")
-    vals = []
+    idx = _nbm_index()
+    rows = []
     for fx in fxx_window(issue, date):
-        fp = GRIB_EXT / f"{issue:%Y%m%dT%HZ}_f{fx:02d}.parquet"
-        if fp.exists():
-            v = pd.read_parquet(fp).iloc[0].get(city)
-            if v is not None:
-                vals.append(float(v))
-    return max(vals) if vals else None
+        v = None
+        if idx:
+            rec = idx.get((issue, fx))
+            if rec is not None:
+                v = rec.get(city)
+        else:  # fallback: per-file extracts
+            fp = GRIB_EXT / f"{issue:%Y%m%dT%HZ}_f{fx:02d}.parquet"
+            if fp.exists():
+                v = pd.read_parquet(fp).iloc[0].get(city)
+        if v is not None and pd.notna(v):
+            rows.append((issue + pd.Timedelta(hours=fx), float(v)))
+    return rows
+
+
+def nbm_forecast_max(city: str, date: dt.date, lead_h: int) -> float | None:
+    """Forecast max over the daylight window at `lead_h` before peak.
+
+    NOTE: at short leads this only covers post-issue hours, so it can miss a
+    peak that already happened (cold bias). build_features combines it with
+    observed max-so-far into `fc_spliced_daily_max`."""
+    rows = _forecast_steps(city, date, lead_h)
+    return max(v for _, v in rows) if rows else None
 
 
 def nbm_forecast_stats(city: str, date: dt.date, lead_h: int) -> dict:
-    """Statistics over forecast steps in the daylight window (not just max).
-
-    Returns max, min, std, argmax_hour — captures forecast spread within day.
-    """
-    p = peak_utc(city, date)
-    issue = (p - pd.Timedelta(hours=lead_h)).floor("h")
-    rows = []
-    for fx in fxx_window(issue, date):
-        fp = GRIB_EXT / f"{issue:%Y%m%dT%HZ}_f{fx:02d}.parquet"
-        if fp.exists():
-            v = pd.read_parquet(fp).iloc[0].get(city)
-            if v is not None:
-                valid = issue + pd.Timedelta(hours=fx)
-                rows.append((valid, float(v)))
+    """max, min, std, argmax_hour over the daylight-window forecast steps."""
+    rows = _forecast_steps(city, date, lead_h)
     if not rows:
         return {"max": None, "min": None, "std": None, "argmax_hour_utc": None}
     arr = np.array([v for _, v in rows])
@@ -250,6 +275,20 @@ def build_features(row: FeatureRow) -> dict:
         row.bucket_lo - obs["obs_max_so_far_today"]
         if obs["obs_max_so_far_today"] is not None else None
     )
+
+    # Spliced daily-max estimate: the trader's actual best guess of the
+    # realized daily high at decision time. At short leads the pure forecast
+    # `mu_now` only covers the post-issue hours and can MISS a peak that
+    # already happened (causes a cold bias) — so we take the max of the
+    # forecast and the observed daily max so far. This is what
+    # forecast_high_for_day(allow_obs_splice=True) does. No leakage: both
+    # inputs are knowable at decision_moment.
+    splice_parts = [v for v in (mu_now, obs.get("obs_max_so_far_today")) if v is not None]
+    f["fc_spliced_daily_max"] = max(splice_parts) if splice_parts else None
+    f["bucket_mid_minus_spliced"] = (
+        f["bucket_mid"] - f["fc_spliced_daily_max"]
+        if f["fc_spliced_daily_max"] is not None else None
+    )
     f["bucket_hi_minus_yesterday_max"] = (
         row.bucket_hi - obs["yesterday_max"]
         if obs["yesterday_max"] is not None else None
@@ -273,6 +312,7 @@ FEATURE_COLS = [
     "mu_min_L6h", "mu_std_L6h", "mu_argmax_hr_L6h",
     "delta_mu_24h", "delta_mu_48h",
     "bucket_mid_minus_mu", "fc_window_range",
+    "fc_spliced_daily_max", "bucket_mid_minus_spliced",
     "temp_now", "temp_lag_1h", "temp_lag_3h", "temp_lag_6h", "temp_lag_12h",
     "obs_max_so_far_today", "obs_min_so_far_today",
     "rate_1h", "rate_3h", "rate_6h",
