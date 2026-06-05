@@ -206,6 +206,44 @@ T=6h decision lead, all 9 cities. Validation:
     symmetrically — they track each other, proving correct price extraction
   - median price staleness 20 min, 65 % within 60 min of target
 
+### XGBoost model — TRAINED (results, honest)
+
+Ran `polycal_ml.train` on the 16-month dataset: 13 walk-forward folds
+(30-day test windows, 90-day warmup), XGBoost + isotonic calibration.
+Artifacts: `results/ml_model.json`, `results/ml_calibrator.pkl`,
+`results/ml_walkforward_report.{parquet,png}`.
+
+Model quality (n-weighted over 7,768 OOS test rows):
+  - **AUC 0.90** — strong ranker, stable 0.85-0.93 across all folds
+  - **Brier 0.0708** — but the MARKET's Brier is 0.0630, so on overall
+    probability accuracy the **market beats the model**, especially in
+    recent months (2026) where the market has tightened up.
+  - **Calibration is perfect** after isotonic: predicted 0.36 → actual
+    0.364, predicted 0.94 → actual 0.944. (The whole point of the ML
+    approach vs the miscalibrated hand-rolled Gaussian.)
+
+Strategy ROI (walk-forward OOS, flat stake):
+  - YES margin 0.05: 1,102 bets, **+10.9 %**, profitable 10/13 folds
+  - YES margin 0.10:   732 bets, **+15.3 %**, profitable  9/13 folds
+  - NO  margin 0.05:   992 bets, **+12.1 %**, profitable 10/13 folds
+  - NO  margin 0.10:   690 bets, **+16.3 %**, profitable 10/13 folds
+
+Leakage check (the important one given the sort-bug history): a model
+trained with **no access to market price** still scores AUC 0.909 and
+yields **+8.4 % ROI** betting against the live market. So the edge is
+genuinely forecast-driven, not market-price echo. Top features are
+market_yes_price (0.14), then bucket_mid_minus_spliced, city, obs/forecast
+deltas — sensibly spread out.
+
+Honest caveats:
+  - Edge is modest (+8-16 %), front-loaded losses in early 2025 folds
+    (small NYC-only training), and the market's Brier is now BELOW the
+    model's — the gap may be closing as Polymarket weather matures.
+  - Only T=6h lead in the dataset; multi-lead would add data.
+  - No slippage / fees / depth modeled; thin markets.
+  - This is the first honest end-to-end ML result. It is plausible but
+    needs more OOS and a live paper-trade before any conviction.
+
 In-sample proof-of-concept dataset (Apr 1 – May 12 2026) at
 `results/ml_dataset_2026-04-01_2026-05-12.parquet`: 2 883 rows × 62 cols.
 Market-price coverage 98.2 %, median staleness 27 min, 25 % within 4 min
