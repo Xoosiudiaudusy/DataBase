@@ -136,7 +136,37 @@ When training the ML model:
 - For prices, either re-fetch via `/trades` (free, already known to match)
   or stream-filter `quant.parquet` from HF Datasets by `condition_id`.
 - Don't blindly download 28 GB; partition-pushdown on `condition_id`
-  isn't supported (single file, no partitions).
+  isn't supported (single file, no partitions). DuckDB with httpfs DOES
+  work: `SELECT * FROM 'url' INNER JOIN local_cids ON …` streams 28 GB
+  and writes ~180 MB filtered output in ~5 min.
+
+## ML pipeline (in `src/polycal_ml/`)
+
+Scaffolded for XGBoost training but not run end-to-end yet (depends on
+ASOS cache being populated for all 9 cities, currently only KLGA 2025).
+
+  - `features.py` — `build_features(FeatureRow)` returns 60+ features:
+    forecast μ at leads 1/3/6/12/24/48 h (+min/std/argmax), observation
+    deltas, bucket geometry, calendar, city, market microstructure
+    (price + staleness + tick count). All NULL when source data missing.
+  - `data_builder.py` — iterates `weather_markets_canonical.parquet`
+    over a date range, builds one row per (market × decision_lead).
+  - `train.py` — walk-forward CV (default 30-day folds, 90-day warmup),
+    XGBoost binary classifier, isotonic calibration on held-out slice,
+    fold-level Brier/AUC/logloss + strategy ROI at margins {0.05, 0.10}.
+  - `tests/test_polycal_ml.py` — smoke tests for feature schema, fold
+    generation, P&L math, and discovery; all green.
+
+Critical: `market_features(condition_id, yes_token, target_ts)` sorts
+the tick parquet before `iloc[-1]` (the bug that fooled us earlier). It
+returns `(market_yes_price, price_staleness_min, n_ticks_before_target)`
+— the staleness is fed to the model so it can discount very-old prices.
+
+In-sample proof-of-concept dataset (Apr 1 – May 12 2026) at
+`results/ml_dataset_2026-04-01_2026-05-12.parquet`: 2 883 rows × 62 cols.
+Market-price coverage 98.2 %, median staleness 27 min, 25 % within 4 min
+of target. Empirical-vs-market check confirms the modal-bucket
+underpricing pattern (offset 0: market 0.36, empirical 0.40).
 
 ### What honestly survives
 
