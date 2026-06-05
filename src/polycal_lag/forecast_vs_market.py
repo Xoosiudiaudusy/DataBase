@@ -53,6 +53,10 @@ def yes_price_at(condition_id, yes_token, target_ts):
     t = t.copy()
     t["yes_price"] = np.where(t["asset"].astype(str)==str(yes_token), t["price"], 1-t["price"])
     t["ts_utc"] = pd.to_datetime(t["ts_utc"])
+    # CRITICAL: Polymarket /trades returns ticks in reverse-chronological order.
+    # Without sorting, iloc[-1] of the filtered df returns the OLDEST matching
+    # tick (market-open price), not the latest before target. See CLAUDE.md.
+    t = t.sort_values("ts_utc").reset_index(drop=True)
     before = t[t["ts_utc"] <= target_ts]
     return float(before["yes_price"].iloc[-1]) if len(before) else None
 

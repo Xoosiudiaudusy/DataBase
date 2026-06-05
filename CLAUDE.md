@@ -34,31 +34,94 @@ results/                 frozen plots and parquet from earlier backfills
 cache/                   gitignored: actuals/, forecasts/, polymarket/, derived/
 ```
 
-## Best strategy found so far (to remember)
+## Strategy notes (history of attempts + current honest state)
 
-**"Buy YES on the bucket nearest the NBM forecast at T=6h"**
+### Painful correction (post-hoc)
 
-Rule (every day, every of the 9 cities):
-  1. At ~T-6h before local peak heating (17:00 local), pull NBM forecast μ.
-  2. Find the bucket-market `[X, X+1]°F` such that `(X+0.5 − μ)` is smallest.
-  3. If `naive NBM P(YES) > market YES price + 0.10`, buy YES at the market.
-  4. Settle automatically at resolution.
+Earlier in the session I claimed "buy YES nearest forecast bucket at T=6h"
+gave **+116 % ROI in-sample**, profitable in 9/9 cities. **That number was
+wrong** — `yes_price_at()` in `forecast_vs_market.py` did not sort the tick
+DataFrame before `.iloc[-1]`, and the Polymarket `/trades` endpoint returns
+ticks in **reverse-chronological order**. So the "price at T=6h" was
+actually the **oldest tick before target** = price at market open (~3 days
+before peak), when nobody knew anything. Naturally bets fired easily and
+won big.
 
-Backtest on Apr 1 – May 12 2026 (the same window as
-`results/forecast_vs_market_apr_may_2026.parquet`):
-  - 395 bets, win rate 29.6%, avg cost $0.137
-  - ROI **+116%** flat-stake
-  - Profitable in **7/7 weeks** (per-week ROI +66% to +173%)
-  - Profitable in **9/9 cities**
-  - Max drawdown −$1.64 per $1 stake; longest losing streak 9 in a row
+Fixed in `forecast_vs_market.py:yes_price_at()` with a `sort_values("ts_utc")`
+call. Re-ran `polycal_lag.forecast_vs_market 2026-04-01 2026-05-12` to
+regenerate `results/forecast_vs_market_apr_may_2026.parquet` with correct
+prices.
 
-Edge source: probability compression — Polymarket flattens probability
-across adjacent buckets (~0.20 each) while NBM correctly peaks at ~0.40
-for the modal bucket. Doesn't depend on the −0.81 F cold-bias tuning
-(works on naive NBM too).
+### Corrected numbers
 
-Caveats: 6-week window only; capacity limited by order-book depth; needs
-real-time NBM access.
+**Simplest rule** — buy YES on the nearest-to-forecast bucket, no margin
+filter, all 9 cities:
+
+  Lead   bets   win    ROI
+  T=1h   336   24.1%  +4.5%
+  T=3h   378   27.8%  +8.7%
+  T=6h   378   26.7%  +8.5%
+  T=12h  378   26.7%  +8.3%
+  T=24h  378   26.5% +17.5%
+  T=48h  371   21.0% +10.0%
+
+Small but consistent in-sample edge — Polymarket undervalues the modal
+bucket by ~7 pp (market 0.35 vs empirical 0.42 at T=12h offset 0).
+
+**Rule with the +10 pp margin filter** (what I originally proposed):
+mostly fails because at T=6h the market has already digested the forecast,
+so the filter rarely fires; when it does, it picks marginal cases that
+don't reliably win.
+
+**Out-of-sample test** (May 13 – Jun 5 2026, `results/oos_may_jun_2026_sorted.parquet`)
+on the simplest rule, T=6h: **206 bets, win 15.5 %, ROI −19.0 %**.
+Only 2 of 9 cities profitable. **Does not survive OOS** on a 24-day window.
+
+### σ was wrong too
+
+`sigma_for(T) = 0.5 + 0.45·√T` (σ=1.6 at T=6h) was tuned to NYC July 2025
+with **observation splicing on**. Re-measured σ across 2 511 (city, lead)
+pairs on pure forecast (no splice):
+
+  East Coast (NYC, Atlanta, Miami, Houston): σ ≈ **3.0 °F** at T=6h
+  West/Central (Chicago, Denver, Austin, Seattle): σ ≈ **5-11 °F** —
+    suspect, see below
+
+The strategy's "naive_p > price + 0.10" rule was inadvertently using a
+σ that was **half the real value**, which made `naive_p` too peaked at the
+modal bucket → triggered on bets that wouldn't fire with the right σ.
+
+### Bug in daylight-window definition
+
+`fxx_window()` uses a fixed UTC window `range(12, 24)` for the "daily max"
+forecast aggregation. This works for East Coast (12-23 UTC ≈ 8-19 EDT,
+covers daylight). But for Pacific cities the window is 05-16 PDT — **misses
+the actual peak heating hours 14-17 PDT**. That's why Chicago, Denver,
+Seattle, Austin had unusable RMSE 6-11 °F. Fix would be: define the window
+in **local time** per city and convert to UTC.
+
+### Future direction noted
+
+Idea (not implemented): train a learned model that takes (forecast μ at
+multiple leads, NBM uncertainty per lead, recent METAR diffs, bucket
+boundaries, hour-of-day, city) as features and outputs a calibrated bucket
+probability. The hand-rolled Gaussian-with-σ-table approach is the dumbest
+possible thing; an ML model could learn city-specific bias and σ from data
+directly.
+
+### What honestly survives
+
+- **The structural finding**: Polymarket prices ARE slightly flatter than
+  the NBM-implied distribution — modal bucket is undervalued by ~7 pp at
+  T=12h. Real, measurable, ~0.0080 lower Brier score for raw market vs
+  NBM at T=12h (market is actually now the BETTER forecaster on its own
+  Brier score, so the "edge" is small).
+- **OOS doesn't confirm the edge** at the bet level for a 24-day window.
+- **Tick staleness at T=6h** with proper sort: median 85 min, 47 % of
+  active markets within 60 min of target. Acceptable but not great.
+
+Caveats for any future trader: this is a noisy edge if real at all,
+needs more OOS, σ table is wrong, west/central forecast window is wrong.
 
 ## Active question (status: first result, hypothesis NOT confirmed)
 
